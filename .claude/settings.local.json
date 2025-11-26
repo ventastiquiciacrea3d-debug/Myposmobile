@@ -1,31 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(flutter pub run build_runner build:*)",
-      "Bash(flutter build:*)",
-      "Bash(del libservicesbackground_sync_service.dart 2)",
-      "Bash(flutter clean:*)",
-      "Bash(flutter pub get:*)",
-      "Bash(flutter run:*)",
-      "Bash(flutter analyze:*)",
-      "Bash(timeout 120 flutter build:*)",
-      "Bash(tee:*)",
-      "Bash(timeout 60 flutter run:*)",
-      "Bash(del /F /Q GeneratedPluginRegistrant.java)",
-      "Bash(flutter devices:*)",
-      "Bash(adb -s 468e515e logcat:*)",
-      "Bash(adb logcat:*)",
-      "Bash(timeout 10 adb:*)",
-      "Bash(pkill:*)",
-      "Bash(timeout 120 flutter run:*)",
-      "Bash(/tmp/flutter_hotrestart.txt)",
-      "Bash(timeout 15 adb:*)",
-      "Bash(xcopy:*)",
-      "Bash(robocopy:*)",
-      "Bash(cmd.exe /c C:UsersblocbMyposmobilecopiar_plugin.bat)",
-      "Bash(dir \"C:\\xampp\\htdocs\\WEBWP\\wp-content\\plugins\\my-pos-barcode-mobil\")",
-      "Bash(timeout 90 flutter run:*)",
-      "Bash(git add:*)"
+      "Bash(git push:*)",
+      "Bash(cmd.exe:*)"
     ],
     "deny": [],
     "ask": []

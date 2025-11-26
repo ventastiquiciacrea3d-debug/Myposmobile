@@ -15,6 +15,7 @@ import '../providers/label_notifier.dart';
 import '../widgets/app_header.dart';
 import '../locator.dart';
 import '../utils/tspl_generator.dart';
+import '../services/tspl_batch_service.dart';
 
 /// ✓ FASE 2 RIVERPOD: Migrado a ConsumerStatefulWidget
 class ThermalPrintingScreen extends ConsumerStatefulWidget {
@@ -45,10 +46,19 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
   String _printStatusMessage = '';
   double _printProgress = 0.0;
 
+  // ⚡ OPTIMIZACIÓN: Generar comandos en background
+  bool _isGeneratingCommands = false;
+  double _generationProgress = 0.0;
+  List<String> _generatedCommands = [];
+
   @override
   void initState() {
     super.initState();
     _loadInitialData();
+    // ⚡ NO bloquear initState - usar post frame callback
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _generateCommandsInBackground();
+    });
   }
 
   Future<void> _loadInitialData() async {
@@ -149,11 +159,31 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
     if (mounted) setState(() => _connected = false);
   }
 
+  /// ⚡ OPTIMIZADO: Usar comandos pregenerados (ya no genera durante impresión)
   Future<void> _printLabels() async {
-    if (!await _printerService.isConnected || _isPrinting || widget.printQueue.isEmpty) {
+    // Validaciones
+    if (!await _printerService.isConnected || _isPrinting) {
       if (mounted) {
         setState(() => _connected = false);
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Impresora no conectada.'), backgroundColor: Colors.orange));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Impresora no conectada.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
+
+    // Verificar que los comandos estén listos
+    if (_generatedCommands.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Esperando generación de comandos...'),
+            backgroundColor: Colors.orange,
+          ),
+        );
       }
       return;
     }
@@ -161,73 +191,68 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
     setState(() {
       _isPrinting = true;
       _printProgress = 0.0;
-      _printStatusMessage = 'Iniciando impresión...';
+      _printStatusMessage = 'Enviando a impresora...';
     });
 
-    final labelState = ref.read(labelProvider);
-    final settings = labelState.settings;
     final navigator = Navigator.of(context);
     final scaffoldMessenger = ScaffoldMessenger.of(context);
 
-    const int batchSize = 20;
-    final totalItems = widget.printQueue.length;
-    int itemsProcessed = 0;
-
     try {
-      for (int i = 0; i < totalItems; i += batchSize) {
+      debugPrint('[ThermalPrinting] 🖨️ Starting print job: ${_generatedCommands.length} commands');
+
+      // Enviar comandos en chunks para no saturar el buffer
+      const chunkSize = 10; // Enviar 10 comandos a la vez
+      final totalCommands = _generatedCommands.length;
+
+      for (int i = 0; i < totalCommands; i += chunkSize) {
         if (!mounted) throw Exception("Operación cancelada.");
 
-        final end = (i + batchSize > totalItems) ? totalItems : i + batchSize;
-        final batchItems = widget.printQueue.sublist(i, end);
+        final end = (i + chunkSize > totalCommands) ? totalCommands : i + chunkSize;
+        final chunk = _generatedCommands.sublist(i, end).join('\n');
 
         if (mounted) {
           setState(() {
-            _printStatusMessage = 'Generando lote ${i+1} - $end de $totalItems...';
+            _printStatusMessage = 'Enviando ${end} de $totalCommands etiquetas...';
+            _printProgress = end / totalCommands;
           });
         }
 
-        // Genera todos los comandos para el lote en paralelo.
-        final List<List<int>> commandsList = await Future.wait(
-            batchItems.map((item) => TsplGenerator.generateCommands(
-              item: item,
-              settings: settings,
-              quantity: item.quantity,
-              density: _printDensity.round(),
-              speed: _printSpeed.round(),
-            ))
-        );
+        // Convertir string a bytes
+        final bytes = chunk.codeUnits;
 
-        // Concatena todos los comandos del lote en una sola lista de bytes.
-        final List<int> batchCommands = commandsList.expand((list) => list).toList();
-
-        if (!mounted) throw Exception("Operación cancelada.");
-
-        if (mounted) {
-          setState(() {
-            _printStatusMessage = 'Enviando $end de $totalItems etiquetas...';
-          });
+        // Enviar a impresora
+        if (!await _printerService.printCommands(bytes)) {
+          throw Exception("Fallo al enviar comandos a la impresora.");
         }
 
-        if (!await _printerService.printCommands(batchCommands)) {
-          throw Exception("Fallo al enviar lote de comandos a la impresora.");
+        // Pequeña pausa entre chunks
+        if (i + chunkSize < totalCommands) {
+          await Future.delayed(const Duration(milliseconds: 300));
         }
-
-        itemsProcessed = end;
-        if (mounted) {
-          setState(() {
-            _printProgress = itemsProcessed / totalItems;
-          });
-        }
-        // Pequeña pausa para no saturar el buffer de la impresora.
-        await Future.delayed(const Duration(milliseconds: 250));
       }
 
-      scaffoldMessenger.showSnackBar(const SnackBar(content: Text('Impresión completada.'), backgroundColor: Colors.green));
+      debugPrint('[ThermalPrinting] ✅ Print job completed successfully');
+
+      scaffoldMessenger.showSnackBar(
+        SnackBar(
+          content: Text('✅ ${widget.printQueue.length} etiquetas impresas'),
+          backgroundColor: Colors.green,
+        ),
+      );
+
+      // Limpiar cola
       ref.read(labelProvider.notifier).clearQueue();
       navigator.pop(true);
 
     } catch (e) {
-      scaffoldMessenger.showSnackBar(SnackBar(content: Text('Error al imprimir: $e'), backgroundColor: Colors.red, duration: const Duration(seconds: 5)));
+      debugPrint('[ThermalPrinting] ❌ Print error: $e');
+      scaffoldMessenger.showSnackBar(
+        SnackBar(
+          content: Text('Error al imprimir: $e'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 5),
+        ),
+      );
     } finally {
       if (mounted) {
         setState(() {
@@ -235,6 +260,120 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
           _printProgress = 0.0;
           _printStatusMessage = '';
         });
+      }
+    }
+  }
+
+  /// ⚡ OPTIMIZACIÓN: Genera todos los comandos TSPL en background
+  /// Usa delays estratégicos y post frame callbacks para mantener UI responsive
+  Future<void> _generateCommandsInBackground() async {
+    if (widget.printQueue.isEmpty || !mounted) return;
+
+    debugPrint('[ThermalPrinting] 🚀 Starting background command generation for ${widget.printQueue.length} items');
+
+    // Actualizar UI inmediatamente
+    if (mounted) {
+      setState(() {
+        _isGeneratingCommands = true;
+        _generationProgress = 0.0;
+      });
+    }
+
+    try {
+      // Dar tiempo al UI para renderizar el estado inicial
+      await Future.delayed(Duration(milliseconds: 100));
+
+      // Preparar datos de productos SIN bloquear UI
+      final productsData = <Map<String, dynamic>>[];
+
+      for (int i = 0; i < widget.printQueue.length; i++) {
+        final item = widget.printQueue[i];
+
+        // Actualizar progreso de carga cada 5 items
+        if (mounted && i % 5 == 0 && i > 0) {
+          setState(() {
+            _generationProgress = (i / widget.printQueue.length) * 0.3; // 30% del progreso total
+          });
+          // Permitir que UI se actualice
+          await Future.delayed(Duration(milliseconds: 1));
+        }
+
+        // Los datos ya están en caché (displayName, displaySku)
+        productsData.add({
+          'name': item.displayName,
+          'sku': item.displaySku,
+          'price': 0.0,
+          'barcode': item.barcode,
+          'quantity': item.quantity,
+        });
+      }
+
+      debugPrint('[ThermalPrinting] Prepared ${productsData.length} products, generating TSPL...');
+
+      // Actualizar estado antes de generar
+      if (mounted) {
+        setState(() {
+          _generationProgress = 0.3;
+        });
+      }
+
+      // Dar tiempo al UI para actualizar
+      await Future.delayed(Duration(milliseconds: 50));
+
+      final labelState = ref.read(labelProvider);
+      final settings = {
+        'width': labelState.settings.labelLayout['width'] ?? 50.0,
+        'height': labelState.settings.labelLayout['height'] ?? 38.0,
+        'density': _printDensity.round(),
+        'speed': _printSpeed.round(),
+        'showName': labelState.settings.visibleAttributes['productName'] ?? true,
+        'showSku': labelState.settings.visibleAttributes['sku'] ?? true,
+        'showPrice': labelState.settings.visibleAttributes['price'] ?? false,
+        'showBarcode': labelState.settings.visibleAttributes['barcode'] ?? true,
+      };
+
+      // Generar comandos en background con progreso
+      final commands = await TsplBatchService.generateBatchInBackground(
+        productsData: productsData,
+        settings: settings,
+        onProgress: (current, total) {
+          // Usar addPostFrameCallback para actualizar UI thread de forma segura
+          if (mounted) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) {
+                setState(() {
+                  // Progreso de 30% a 100%
+                  _generationProgress = 0.3 + (current / total) * 0.7;
+                });
+              }
+            });
+          }
+        },
+      );
+
+      debugPrint('[ThermalPrinting] ✅ Generated ${commands.length} commands successfully');
+
+      // Actualización final
+      if (mounted) {
+        setState(() {
+          _generatedCommands = commands;
+          _isGeneratingCommands = false;
+          _generationProgress = 1.0;
+        });
+      }
+
+    } catch (e) {
+      debugPrint('[ThermalPrinting] ❌ Error generating commands: $e');
+      if (mounted) {
+        setState(() {
+          _isGeneratingCommands = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error preparando etiquetas: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
       }
     }
   }
@@ -252,6 +391,42 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
     if (_isLoading) return const Center(child: CircularProgressIndicator());
     if (!_isBluetoothEnabled) return _buildBluetoothDisabledWarning();
     if (_errorText != null) return Center(child: Padding(padding: const EdgeInsets.all(20), child: Text(_errorText!, style: const TextStyle(color: Colors.red), textAlign: TextAlign.center)));
+
+    // ⚡ Mostrar progreso de generación de comandos
+    if (_isGeneratingCommands) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.settings, size: 64, color: Colors.blue),
+              const SizedBox(height: 24),
+              Text(
+                'Preparando etiquetas...',
+                style: Theme.of(context).textTheme.headlineSmall,
+              ),
+              const SizedBox(height: 16),
+              LinearProgressIndicator(
+                value: _generationProgress,
+                minHeight: 8,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                '${(_generationProgress * 100).toInt()}% - ${(_generationProgress * widget.printQueue.length).toInt()} de ${widget.printQueue.length}',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'La pantalla permanecerá responsive...',
+                style: TextStyle(color: Colors.grey),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
 
     final labelState = ref.watch(labelProvider);
     final settings = labelState.settings;
@@ -377,6 +552,13 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
   }
 
   Widget _buildPrintButton() {
+    // Deshabilitar si está generando comandos o imprimiendo
+    final canPrint = _connected &&
+                     !_isPrinting &&
+                     !_isGeneratingCommands &&
+                     _generatedCommands.isNotEmpty &&
+                     widget.printQueue.isNotEmpty;
+
     return Container(
       width: double.infinity,
       padding: EdgeInsets.fromLTRB(16, 16, 16, 16 + MediaQuery.of(context).padding.bottom),
@@ -396,16 +578,54 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
           ),
         ],
       )
-          : ElevatedButton.icon(
-        icon: const Icon(Icons.print_rounded),
-        label: const Text('IMPRIMIR COLA'),
-        style: ElevatedButton.styleFrom(
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-          backgroundColor: _connected ? Theme.of(context).primaryColor : Colors.grey,
-          disabledBackgroundColor: Colors.grey,
-        ),
-        onPressed: _connected && !_isPrinting && widget.printQueue.isNotEmpty ? _printLabels : null,
+          : Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Mostrar estado de comandos
+          if (_isGeneratingCommands)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    'Preparando comandos... ${(_generationProgress * 100).toInt()}%',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ],
+              ),
+            )
+          else if (_generatedCommands.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                '✅ ${_generatedCommands.length} etiquetas listas',
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: Colors.green,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+
+          ElevatedButton.icon(
+            icon: const Icon(Icons.print_rounded),
+            label: const Text('IMPRIMIR COLA'),
+            style: ElevatedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              backgroundColor: canPrint ? Theme.of(context).primaryColor : Colors.grey,
+              disabledBackgroundColor: Colors.grey,
+            ),
+            onPressed: canPrint ? _printLabels : null,
+          ),
+        ],
       ),
     );
   }
