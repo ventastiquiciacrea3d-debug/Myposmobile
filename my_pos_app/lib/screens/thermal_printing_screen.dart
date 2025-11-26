@@ -109,6 +109,21 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
   }
 
   Future<bool> _requestPermissions() async {
+    debugPrint('[ThermalPrinting] 🔐 Checking Bluetooth permissions...');
+
+    // Verificar estado actual primero
+    final scanStatus = await Permission.bluetoothScan.status;
+    final connectStatus = await Permission.bluetoothConnect.status;
+
+    debugPrint('[ThermalPrinting] Current permissions - Scan: $scanStatus, Connect: $connectStatus');
+
+    // Si ya están otorgados, no solicitar de nuevo
+    if (scanStatus.isGranted && connectStatus.isGranted) {
+      debugPrint('[ThermalPrinting] ✅ All Bluetooth permissions already granted');
+      return true;
+    }
+
+    // Solicitar permisos
     Map<Permission, PermissionStatus> statuses = await [
       Permission.bluetoothScan,
       Permission.bluetoothConnect,
@@ -116,13 +131,22 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
 
     if (!mounted) return false;
 
-    if (statuses[Permission.bluetoothScan]!.isGranted && statuses[Permission.bluetoothConnect]!.isGranted) {
+    final scanGranted = statuses[Permission.bluetoothScan]!.isGranted;
+    final connectGranted = statuses[Permission.bluetoothConnect]!.isGranted;
+
+    debugPrint('[ThermalPrinting] Permissions after request - Scan: $scanGranted, Connect: $connectGranted');
+
+    if (scanGranted && connectGranted) {
+      debugPrint('[ThermalPrinting] ✅ Bluetooth permissions granted');
       return true;
     } else {
       String message = "Se requieren permisos de Bluetooth para buscar y conectar impresoras.";
       if (statuses[Permission.bluetoothScan]!.isPermanentlyDenied || statuses[Permission.bluetoothConnect]!.isPermanentlyDenied) {
         message += " Por favor, actívalos desde los ajustes de la aplicación.";
+        debugPrint('[ThermalPrinting] ⚠️ Permissions permanently denied, opening settings');
         openAppSettings();
+      } else {
+        debugPrint('[ThermalPrinting] ⚠️ Permissions denied by user');
       }
       setState(() => _errorText = message);
       return false;
