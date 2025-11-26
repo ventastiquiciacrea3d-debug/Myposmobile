@@ -185,8 +185,17 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
 
   /// ⚡ OPTIMIZADO: Usar comandos pregenerados (ya no genera durante impresión)
   Future<void> _printLabels() async {
-    // Validaciones
-    if (!await _printerService.isConnected || _isPrinting) {
+    debugPrint('[ThermalPrinting] 🖨️ Print button pressed');
+    debugPrint('[ThermalPrinting] _isPrinting: $_isPrinting');
+    debugPrint('[ThermalPrinting] _connected: $_connected');
+    debugPrint('[ThermalPrinting] _generatedCommands.length: ${_generatedCommands.length}');
+
+    // Validación 1: Verificar conexión
+    final isConnected = await _printerService.isConnected;
+    debugPrint('[ThermalPrinting] Printer isConnected: $isConnected');
+
+    if (!isConnected || _isPrinting) {
+      debugPrint('[ThermalPrinting] ❌ Cannot print: Not connected or already printing');
       if (mounted) {
         setState(() => _connected = false);
         ScaffoldMessenger.of(context).showSnackBar(
@@ -199,8 +208,9 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
       return;
     }
 
-    // Verificar que los comandos estén listos
+    // Validación 2: Verificar que los comandos estén listos
     if (_generatedCommands.isEmpty) {
+      debugPrint('[ThermalPrinting] ❌ Cannot print: No commands generated yet');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -211,6 +221,8 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
       }
       return;
     }
+
+    debugPrint('[ThermalPrinting] ✅ All validations passed, starting print...');
 
     setState(() {
       _isPrinting = true;
@@ -305,7 +317,8 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
 
     try {
       // Dar tiempo al UI para renderizar el estado inicial
-      await Future.delayed(Duration(milliseconds: 100));
+      // ⚡ Delay mínimo de 500ms para que la barra de progreso sea visible
+      await Future.delayed(Duration(milliseconds: 500));
 
       // Preparar datos de productos SIN bloquear UI
       final productsData = <Map<String, dynamic>>[];
