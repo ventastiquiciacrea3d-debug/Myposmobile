@@ -65,19 +65,27 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
     debugPrint('[ThermalPrinting] 📱 _loadInitialData() started');
     if (mounted) setState(() { _isLoading = true; _errorText = null; });
 
+    // ⚡ FIX: Solicitar permisos PRIMERO, antes de verificar Bluetooth
+    // Esto evita que getBluetoothState() se cuelgue por falta de permisos
+    final permissionsGranted = await _requestPermissions();
+    debugPrint('[ThermalPrinting] Permissions granted: $permissionsGranted');
+
+    if (!permissionsGranted) {
+      debugPrint('[ThermalPrinting] ⚠️ Permissions not granted, showing warning');
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _errorText = 'Permisos de Bluetooth requeridos. Por favor, habilita los permisos en Configuración.';
+        });
+      }
+      return;
+    }
+
+    // Ahora que tenemos permisos, verificar estado de Bluetooth
     await _checkBluetoothState();
     debugPrint('[ThermalPrinting] Bluetooth enabled: $_isBluetoothEnabled');
 
     if (_isBluetoothEnabled) {
-      final permissionsGranted = await _requestPermissions();
-      debugPrint('[ThermalPrinting] Permissions granted: $permissionsGranted');
-
-      if (!permissionsGranted) {
-        debugPrint('[ThermalPrinting] ⚠️ Permissions not granted, setting _isLoading = false');
-        if (mounted) setState(() => _isLoading = false);
-        return;
-      }
-
       await _refreshDevices();
       debugPrint('[ThermalPrinting] Devices refreshed: ${_devices.length} devices found');
 
