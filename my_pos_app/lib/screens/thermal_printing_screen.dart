@@ -62,20 +62,34 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
   }
 
   Future<void> _loadInitialData() async {
+    debugPrint('[ThermalPrinting] 📱 _loadInitialData() started');
     if (mounted) setState(() { _isLoading = true; _errorText = null; });
+
     await _checkBluetoothState();
+    debugPrint('[ThermalPrinting] Bluetooth enabled: $_isBluetoothEnabled');
+
     if (_isBluetoothEnabled) {
       final permissionsGranted = await _requestPermissions();
+      debugPrint('[ThermalPrinting] Permissions granted: $permissionsGranted');
+
       if (!permissionsGranted) {
+        debugPrint('[ThermalPrinting] ⚠️ Permissions not granted, setting _isLoading = false');
         if (mounted) setState(() => _isLoading = false);
         return;
       }
+
       await _refreshDevices();
+      debugPrint('[ThermalPrinting] Devices refreshed: ${_devices.length} devices found');
+
       final alreadyConnected = await _printerService.isConnected;
+      debugPrint('[ThermalPrinting] Already connected: $alreadyConnected');
+
       if (mounted && alreadyConnected) {
         setState(() => _connected = true);
       } else {
         final savedMac = _prefs.getString(lastConnectedPrinterPrefKey);
+        debugPrint('[ThermalPrinting] Saved MAC: $savedMac');
+
         if (savedMac != null && _devices.any((d) => d.macAdress == savedMac)) {
           if (mounted) {
             setState(() {
@@ -87,12 +101,26 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
         }
       }
     }
+
+    debugPrint('[ThermalPrinting] ✅ _loadInitialData() completed, setting _isLoading = false');
     if (mounted) setState(() => _isLoading = false);
   }
 
   Future<void> _checkBluetoothState() async {
-    final isEnabled = await _printerService.getBluetoothState();
-    if (mounted) setState(() => _isBluetoothEnabled = isEnabled);
+    try {
+      debugPrint('[ThermalPrinting] Checking Bluetooth state...');
+      // ⚡ FIX: Add timeout to prevent hanging forever
+      final isEnabled = await _printerService.getBluetoothState()
+          .timeout(const Duration(seconds: 5), onTimeout: () {
+        debugPrint('[ThermalPrinting] ⚠️ Bluetooth state check timed out, assuming disabled');
+        return false;
+      });
+      debugPrint('[ThermalPrinting] Bluetooth state result: $isEnabled');
+      if (mounted) setState(() => _isBluetoothEnabled = isEnabled);
+    } catch (e) {
+      debugPrint('[ThermalPrinting] ❌ Error checking Bluetooth state: $e');
+      if (mounted) setState(() => _isBluetoothEnabled = false);
+    }
   }
 
   Future<void> _refreshDevices() async {
@@ -425,12 +453,31 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
   }
 
   Widget _buildBody() {
-    if (_isLoading) return const Center(child: CircularProgressIndicator());
-    if (!_isBluetoothEnabled) return _buildBluetoothDisabledWarning();
-    if (_errorText != null) return Center(child: Padding(padding: const EdgeInsets.all(20), child: Text(_errorText!, style: const TextStyle(color: Colors.red), textAlign: TextAlign.center)));
+    debugPrint('[ThermalPrinting] 🎨 _buildBody() called');
+    debugPrint('[ThermalPrinting] _isLoading: $_isLoading');
+    debugPrint('[ThermalPrinting] _isBluetoothEnabled: $_isBluetoothEnabled');
+    debugPrint('[ThermalPrinting] _errorText: $_errorText');
+    debugPrint('[ThermalPrinting] _isGeneratingCommands: $_isGeneratingCommands');
+
+    if (_isLoading) {
+      debugPrint('[ThermalPrinting] Showing loading indicator');
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (!_isBluetoothEnabled) {
+      debugPrint('[ThermalPrinting] Showing Bluetooth disabled warning');
+      return _buildBluetoothDisabledWarning();
+    }
+
+    if (_errorText != null) {
+      debugPrint('[ThermalPrinting] Showing error text: $_errorText');
+      return Center(child: Padding(padding: const EdgeInsets.all(20), child: Text(_errorText!, style: const TextStyle(color: Colors.red), textAlign: TextAlign.center)));
+    }
 
     // ⚡ Mostrar progreso de generación de comandos
     if (_isGeneratingCommands) {
+      debugPrint('[ThermalPrinting] Showing command generation progress');
+
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(32.0),
@@ -467,6 +514,8 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
 
     final labelState = ref.watch(labelProvider);
     final settings = labelState.settings;
+
+    debugPrint('[ThermalPrinting] ✅ Rendering main UI with ${_devices.length} devices');
 
     return ListView(
       padding: const EdgeInsets.all(16.0),
