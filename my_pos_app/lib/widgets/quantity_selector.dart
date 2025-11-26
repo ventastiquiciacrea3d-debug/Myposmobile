@@ -9,12 +9,12 @@ class QuantitySelector extends StatefulWidget {
   final int maxValue;
 
   const QuantitySelector({
-    Key? key,
+    super.key,
     required this.value,
     required this.onChanged,
     this.minValue = 0, // Valor mínimo permitido (ej. 0 para eliminar, 1 para no permitir 0)
     required this.maxValue, // Máximo valor permitido (ej. stock disponible)
-  }) : super(key: key);
+  });
 
   @override
   _QuantitySelectorState createState() => _QuantitySelectorState();

@@ -20,4 +20,21 @@ class InventoryAdjustmentCache extends HiveObject {
     required this.items,
     required this.lastModified,
   });
+
+  /// ✅ JSON serialization for SharedPreferences migration
+  factory InventoryAdjustmentCache.fromJson(Map<String, dynamic> json) {
+    return InventoryAdjustmentCache(
+      description: json['description'] as String? ?? '',
+      items: (json['items'] as List<dynamic>?)
+          ?.map((item) => InventoryMovementLine.fromJson(item as Map<String, dynamic>))
+          .toList() ?? [],
+      lastModified: DateTime.tryParse(json['lastModified'] as String? ?? '') ?? DateTime.now(),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'description': description,
+    'items': items.map((item) => item.toJson()).toList(),
+    'lastModified': lastModified.toIso8601String(),
+  };
 }

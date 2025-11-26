@@ -1,30 +1,31 @@
 // lib/screens/inventory_screen.dart
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import '../models/inventory_movement.dart';
-import '../providers/inventory_provider.dart';
-import '../providers/app_state_provider.dart';
-import '../providers/label_provider.dart';
+import '../models/inventory_movement_extensions.dart'; // Mantener el import
+import '../providers/inventory_notifier.dart';
+import '../providers/app_state_notifier.dart';
+import '../providers/label_notifier.dart';
 
 import '../widgets/app_header.dart';
 import '../widgets/dial_floating_action_button.dart';
 import '../widgets/custom_fab_location.dart';
 import '../config/routes.dart';
 
-import '../models/inventory_movement_extensions.dart';
 import './inventory_adjustment_form_screen.dart';
 
-class InventoryScreen extends StatefulWidget {
+/// ✓ FASE 2 RIVERPOD: Migrado a ConsumerStatefulWidget
+class InventoryScreen extends ConsumerStatefulWidget {
   const InventoryScreen({super.key});
 
   @override
-  State<InventoryScreen> createState() => _InventoryScreenState();
+  ConsumerState<InventoryScreen> createState() => _InventoryScreenState();
 }
 
-class _InventoryScreenState extends State<InventoryScreen> {
+class _InventoryScreenState extends ConsumerState<InventoryScreen> {
   final TextEditingController _historySearchController = TextEditingController();
   final ScrollController _historyScrollController = ScrollController();
   Timer? _historySearchDebounce;
@@ -40,7 +41,12 @@ class _InventoryScreenState extends State<InventoryScreen> {
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        _toggleView(true); // Iniciar por defecto en la vista de historial
+        // CORRECCIÓN RÁPIDA: Si el problema de navegación es que no llega a la vista
+        // correctamente, forzamos la navegación al historial si el appState lo indica.
+        // Asumiendo que el flujo principal de su app es a /scanner,
+        // este _toggleView(true) debe forzarse en el main isolate si es necesario.
+        // Si el problema es solo el displayName, déjelo así y el usuario lo presiona.
+        // _toggleView(true); // Se elimina para que el usuario presione "Ver Historial"
       }
     });
   }
@@ -56,12 +62,12 @@ class _InventoryScreenState extends State<InventoryScreen> {
   }
 
   void _onHistoryScroll() {
-    final provider = context.read<InventoryProvider>();
+    final inventoryState = ref.read(inventoryProvider);
     if (_historyScrollController.position.pixels >= _historyScrollController.position.maxScrollExtent - 300 &&
-        provider.canLoadMoreMovements &&
-        !provider.isLoadingMoreMovements &&
-        !provider.isLoadingMovements) {
-      provider.loadInventoryMovements(searchTerm: _historySearchController.text.trim());
+        inventoryState.movementsCanLoadMore &&
+        !inventoryState.movementsIsLoadingMore &&
+        !inventoryState.movementsIsLoading) {
+      ref.read(inventoryProvider.notifier).loadInventoryMovements(searchTerm: _historySearchController.text.trim());
     }
   }
 
@@ -69,7 +75,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
     _historySearchDebounce?.cancel();
     _historySearchDebounce = Timer(const Duration(milliseconds: 500), () {
       if (mounted) {
-        context.read<InventoryProvider>().loadInventoryMovements(
+        ref.read(inventoryProvider.notifier).loadInventoryMovements(
           searchTerm: _historySearchController.text.trim(),
           refresh: true,
         );
@@ -83,7 +89,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
       _showHistoryView = showHistory;
       if (_showHistoryView) {
         FocusScope.of(context).unfocus();
-        context.read<InventoryProvider>().loadInventoryMovements(refresh: true);
+        ref.read(inventoryProvider.notifier).loadInventoryMovements(refresh: true);
       } else {
         _historySearchController.clear();
       }
@@ -104,7 +110,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
           const SnackBar(content: Text('Ajuste de inventario procesado.'), backgroundColor: Colors.green),
         );
         if (_showHistoryView) {
-          context.read<InventoryProvider>().loadInventoryMovements(refresh: true);
+          ref.read(inventoryProvider.notifier).loadInventoryMovements(refresh: true);
         }
       } else if (success is String && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -128,7 +134,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
           TextButton(
             onPressed: () {
               Navigator.pop(dialogContext);
-              context.read<InventoryProvider>().resetAllStockToZero();
+              ref.read(inventoryProvider.notifier).resetAllStockToZero();
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(content: Text('Iniciando reseteo de stock en segundo plano...'), backgroundColor: Colors.blueGrey),
               );
@@ -146,13 +152,13 @@ class _InventoryScreenState extends State<InventoryScreen> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Activar Gestión de Stock'),
-        content: const Text('Esta acción activará la "Gestión de inventario" para todos los productos variables y sus variaciones. Esto es útil para asegurar un control de stock preciso. La tarea se ejecutará en segundo plano.'),
+        content: const Text('Esta acción activará la "Gestión de inventario" para todos los productos variables y sus variaciones. Es útil para asegurar un control de stock preciso. La tarea se ejecutará en segundo plano.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('CANCELAR')),
           TextButton(
             onPressed: () {
               Navigator.pop(dialogContext);
-              context.read<InventoryProvider>().activateManageStockForAllVariables();
+              ref.read(inventoryProvider.notifier).activateManageStockForAllVariables();
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(content: Text('Iniciando activación en segundo plano...'), backgroundColor: Colors.blueGrey),
               );
@@ -165,10 +171,84 @@ class _InventoryScreenState extends State<InventoryScreen> {
     );
   }
 
+  /// 🟢 NUEVO: Sincronizar cambios de inventario desde WordPress
+  Future<void> _syncExternalInventoryChanges(BuildContext context) async {
+    // Mostrar indicador de carga
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Row(
+          children: [
+            SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+            ),
+            SizedBox(width: 12),
+            Text('Sincronizando cambios de inventario...'),
+          ],
+        ),
+        duration: Duration(seconds: 30),
+        backgroundColor: Colors.blue,
+      ),
+    );
+
+    try {
+      // Obtener el servicio de polling del locator
+      final pollingService = ref.read(appStateNotifierProvider.notifier).pollingService;
+
+      if (pollingService == null) {
+        throw Exception('Servicio de sincronización no disponible');
+      }
+
+      // Forzar sincronización de productos
+      await pollingService.forceProductsSync();
+
+      // Ocultar snackbar de carga
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+
+        // Mostrar éxito
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.check_circle, color: Colors.white),
+                SizedBox(width: 12),
+                Expanded(child: Text('¡Inventario sincronizado exitosamente!')),
+              ],
+            ),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e) {
+      // Ocultar snackbar de carga
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+
+        // Mostrar error
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.error_outline, color: Colors.white),
+                const SizedBox(width: 12),
+                Expanded(child: Text('Error al sincronizar: ${e.toString()}')),
+              ],
+            ),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final inventoryProvider = context.watch<InventoryProvider>();
-    final appState = context.watch<AppStateProvider>();
+    final inventoryState = ref.watch(inventoryProvider);
+    final appState = ref.watch(appStateNotifierProvider);
     final isRootInventoryView = !_showHistoryView;
     final theme = Theme.of(context);
 
@@ -183,7 +263,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
       ),
       body: Column(
         children: [
-          if (appState.connectionStatus == ConnectionStatus.offline)
+          if (!appState.isOnline)
             Container(
               color: Colors.orange.shade800,
               padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 16),
@@ -196,7 +276,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                 ],
               ),
             ),
-          if (inventoryProvider.isBackgroundTaskRunning)
+          if (inventoryState.isBackgroundTaskRunning)
             Container(
               color: Colors.blueGrey.shade700,
               child: Padding(
@@ -205,14 +285,14 @@ class _InventoryScreenState extends State<InventoryScreen> {
                   children: [
                     const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
                     const SizedBox(width: 12),
-                    Expanded(child: Text(inventoryProvider.backgroundTaskMessage ?? 'Procesando...', style: const TextStyle(color: Colors.white, fontSize: 13))),
+                    Expanded(child: Text(inventoryState.backgroundTaskMessage ?? 'Procesando...', style: const TextStyle(color: Colors.white, fontSize: 13))),
                   ],
                 ),
               ),
             ),
           Expanded(
             child: _showHistoryView
-                ? _buildInventoryHistoryView(context, inventoryProvider)
+                ? _buildInventoryHistoryView(context, inventoryState)
                 : _buildOperationsCenter(context),
           ),
         ],
@@ -334,6 +414,15 @@ class _InventoryScreenState extends State<InventoryScreen> {
           ),
           const SizedBox(height: 12),
           _AdvancedOperationButton(
+            icon: Icons.sync_outlined,
+            label: "Sincronizar Inventario Externo",
+            description: "Actualiza productos modificados en WordPress (cambios externos a la app).",
+            onPressed: () => _syncExternalInventoryChanges(context),
+            theme: theme,
+            color: Colors.indigo,
+          ),
+          const SizedBox(height: 12),
+          _AdvancedOperationButton(
             icon: Icons.dynamic_feed_outlined,
             label: "Activar Gestión de Stock para Variables",
             description: "Asegura que todos los productos con variantes gestionen inventario.",
@@ -355,7 +444,8 @@ class _InventoryScreenState extends State<InventoryScreen> {
     );
   }
 
-  Widget _buildInventoryHistoryView(BuildContext context, InventoryProvider provider) {
+  /// ✓ CORREGIDO: Usa función auxiliar local en lugar del getter de extensión.
+  Widget _buildInventoryHistoryView(BuildContext context, invState) {
     final theme = Theme.of(context);
 
     return Column(
@@ -386,38 +476,71 @@ class _InventoryScreenState extends State<InventoryScreen> {
           ),
         ),
         Expanded(
-          child: (provider.isLoadingMovements && provider.inventoryMovements.isEmpty)
+          child: invState.movementsIsLoading && invState.inventoryMovements.isEmpty
               ? const Center(child: CircularProgressIndicator())
-              : (provider.movementsError != null && provider.inventoryMovements.isEmpty)
-              ? Center(child: Padding(padding: const EdgeInsets.all(24), child: Text(provider.movementsError!, textAlign: TextAlign.center, style: TextStyle(color: Colors.red.shade700))))
-              : (provider.inventoryMovements.isEmpty)
+              : invState.movementsError != null && invState.inventoryMovements.isEmpty
+              ? Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text(
+                invState.movementsError!,
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.red.shade700),
+              ),
+            ),
+          )
+              : invState.inventoryMovements.isEmpty
               ? Center(
             child: Padding(
               padding: const EdgeInsets.all(24.0),
               child: Text(
-                _historySearchController.text.isNotEmpty ? 'No hay movimientos que coincidan con tu búsqueda.' : 'Aún no hay movimientos de inventario registrados.',
-                textAlign: TextAlign.center, style: TextStyle(color: Colors.grey.shade600, fontSize: 16),
+                _historySearchController.text.isNotEmpty
+                    ? 'No hay movimientos que coincidan con tu búsqueda.'
+                    : 'Aún no hay movimientos de inventario registrados.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey.shade600, fontSize: 16),
               ),
             ),
           )
               : RefreshIndicator(
-            onRefresh: () => provider.loadInventoryMovements(
+            onRefresh: () => ref.read(inventoryProvider.notifier).loadInventoryMovements(
               searchTerm: _historySearchController.text,
               refresh: true,
             ),
             child: ListView.builder(
               controller: _historyScrollController,
               padding: const EdgeInsets.fromLTRB(12.0, 0, 12.0, 80.0),
-              itemCount: provider.inventoryMovements.length + (provider.isLoadingMoreMovements ? 1 : 0),
+              itemCount: invState.inventoryMovements.length + (invState.movementsIsLoadingMore ? 1 : 0),
               itemBuilder: (ctx, index) {
-                if (index == provider.inventoryMovements.length) {
+                // Indicador de carga al final
+                if (index == invState.inventoryMovements.length) {
                   return const Padding(
                     padding: EdgeInsets.symmetric(vertical: 20),
                     child: Center(child: CircularProgressIndicator()),
                   );
                 }
-                final movement = provider.inventoryMovements[index];
-                final String movementTypeDisplayName = movement.type.displayName;
+
+                // ✓ CORRECCIÓN: Validar que el elemento existe y es válido
+                if (index >= invState.inventoryMovements.length) {
+                  return const SizedBox.shrink();
+                }
+
+                final movement = invState.inventoryMovements[index];
+
+                // ✓ CORRECCIÓN: Validar que movement no es null antes de acceder a sus propiedades
+                if (movement == null) {
+                  debugPrint("[InventoryScreen] WARNING: movement at index $index is null");
+                  return const SizedBox.shrink();
+                }
+
+                // ✓ CORRECCIÓN ADICIONAL: Validar que movement.type no es null
+                if (movement.type == null) {
+                  debugPrint("[InventoryScreen] WARNING: movement.type at index $index is null");
+                  return const SizedBox.shrink();
+                }
+
+                // 📌 CAMBIO CLAVE: Usa la función auxiliar local para evitar el error de extensión.
+                final String movementTypeDisplayName = _getMovementTypeDisplayName(movement.type);
                 final IconData movementTypeIcon = _getIconForMovementType(movement.type);
                 final Color typeColor = _getColorForMovementType(theme, movement.type);
                 final int totalItemsAffected = movement.items.length;
@@ -456,7 +579,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          (totalQuantityChange > 0 ? "+" : "") + totalQuantityChange.toString() + " uds.",
+                          "${totalQuantityChange > 0 ? "+" : ""}$totalQuantityChange uds.",
                           style: TextStyle(
                             fontSize: 14,
                             fontWeight: FontWeight.bold,
@@ -474,7 +597,8 @@ class _InventoryScreenState extends State<InventoryScreen> {
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                Text(movement.type.displayName, style: TextStyle(fontSize: 11.5, color: typeColor, fontWeight: FontWeight.bold)),
+                                // 📌 CAMBIO CLAVE: Usar la función auxiliar local aquí también
+                                Text(movementTypeDisplayName, style: TextStyle(fontSize: 11.5, color: typeColor, fontWeight: FontWeight.bold)),
                                 Text('$totalItemsAffected producto(s)', style: TextStyle(fontSize: 11.5, color: Colors.grey.shade700)),
                               ],
                             ),
@@ -531,7 +655,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                   ],
                                 ),
                               );
-                            }).toList(),
+                            }),
                             const Divider(height: 16, thickness: 0.5),
                             Row(
                               mainAxisAlignment: MainAxisAlignment.end,
@@ -552,8 +676,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                       ),
                                     );
 
-                                    final labelProvider = context.read<LabelProvider>();
-                                    final itemsAddedCount = await labelProvider.addMovementItemsToQueue(movement);
+                                    final itemsAddedCount = await ref.read(labelProvider.notifier).addMovementItemsToQueue(movement);
 
                                     if (!mounted) return;
                                     Navigator.of(context, rootNavigator: true).pop();
@@ -595,6 +718,45 @@ class _InventoryScreenState extends State<InventoryScreen> {
         ),
       ],
     );
+  }
+
+  // 📌 FUNCIÓN DE FALLBACK: Implementación local del displayName para evitar el error de extensión.
+  String _getMovementTypeDisplayName(InventoryMovementType type) {
+    switch (type) {
+      case InventoryMovementType.manualAdjustment:
+        return "Ajuste Manual";
+      case InventoryMovementType.initialStock:
+        return "Stock Inicial";
+      case InventoryMovementType.sale:
+        return "Venta";
+      case InventoryMovementType.refund:
+        return "Devolución";
+      case InventoryMovementType.stockReceipt:
+        return "Recepción de Stock";
+      case InventoryMovementType.stockCorrection:
+        return "Corrección de Stock";
+      case InventoryMovementType.damageOrLoss:
+        return "Daño o Pérdida";
+      case InventoryMovementType.transferOut:
+        return "Transferencia (Salida)";
+      case InventoryMovementType.transferIn:
+        return "Transferencia (Entrada)";
+      case InventoryMovementType.massEntry:
+        return "Entrada por Lote";
+      case InventoryMovementType.massExit:
+        return "Salida por Lote";
+      case InventoryMovementType.massManualAdjustment:
+        return "Ajuste Manual Masivo";
+      case InventoryMovementType.supplierReceipt:
+        return "Recepción de Proveedor";
+      case InventoryMovementType.customerReturnMass:
+        return "Devolución Masiva Clientes";
+      case InventoryMovementType.toTrash:
+        return "Envío a Papelera";
+      case InventoryMovementType.unknown:
+      default:
+        return "Desconocido";
+    }
   }
 
   IconData _getIconForMovementType(InventoryMovementType type) {

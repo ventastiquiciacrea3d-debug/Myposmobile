@@ -11,10 +11,10 @@ class TsplLabelPreview extends StatelessWidget {
   final LabelSettings settings;
 
   const TsplLabelPreview({
-    Key? key,
+    super.key,
     required this.item,
     required this.settings,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

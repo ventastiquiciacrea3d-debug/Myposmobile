@@ -20,6 +20,10 @@ const String scannerSoundPrefKey = 'scanner_sound';
 const String labelSettingsPrefKey = 'label_settings';
 const String lastConnectedPrinterPrefKey = 'last_connected_printer';
 
+// 🟢 NUEVO: Configuración de sincronización de inventario externo
+const String autoSyncProductsPrefKey = 'auto_sync_products_enabled';
+const String productsSyncIntervalPrefKey = 'products_sync_interval_seconds';
+
 // --- Secure Storage Keys ---
 const String secureApiUrlKey = 'api_url';
 const String secureMyPosApiKey = 'mypos_api_key';

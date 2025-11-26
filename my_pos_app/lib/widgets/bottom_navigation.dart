@@ -1,6 +1,6 @@
 // lib/widgets/bottom_navigation.dart
 import 'package:flutter/material.dart';
-import '../config/routes.dart'; // Importar Routes para la navegación
+// Importar Routes para la navegación
 
 class BottomNavigation extends StatelessWidget {
   final int currentIndex; // El índice de la pestaña actualmente seleccionada
@@ -8,11 +8,11 @@ class BottomNavigation extends StatelessWidget {
   final bool centerFabExists; // Indica si hay un FAB central para ajustar layout
 
   const BottomNavigation({
-    Key? key,
+    super.key,
     required this.currentIndex,
     required this.onTap,
     this.centerFabExists = false, // Por defecto no hay FAB, las pantallas lo activarán
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

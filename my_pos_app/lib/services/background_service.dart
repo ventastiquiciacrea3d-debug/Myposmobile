@@ -68,8 +68,16 @@ class AppBackgroundService {
   AppBackgroundService._internal();
 
   final FlutterBackgroundService _service = FlutterBackgroundService();
+  bool _isInitialized = false;
 
   Future<void> initializeService() async {
+    // ✓ GUARD: Prevenir inicializaciones múltiples
+    if (_isInitialized) {
+      debugPrint("[AppBackgroundService] Already initialized, skipping");
+      return;
+    }
+
+    debugPrint("[AppBackgroundService] Initializing in main isolate...");
     await _service.configure(
       androidConfiguration: AndroidConfiguration(
         onStart: onStart,
@@ -82,6 +90,7 @@ class AppBackgroundService {
         autoStart: true,
       ),
     );
-    debugPrint("Background Service configured in main app.");
+    debugPrint("[AppBackgroundService] Background Service configured in main app.");
+    _isInitialized = true;
   }
 }

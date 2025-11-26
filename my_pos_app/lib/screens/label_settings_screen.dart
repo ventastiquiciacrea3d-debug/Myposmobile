@@ -1,21 +1,22 @@
 // lib/screens/label_settings_screen.dart
 import 'package:flutter/material.dart';
 import 'package:lucide_icons/lucide_icons.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import '../models/label_print_item.dart';
-import '../providers/label_provider.dart';
+import '../providers/label_notifier.dart';
 import '../widgets/shared/label_preview.dart';
 
-class LabelSettingsScreen extends StatefulWidget {
-  const LabelSettingsScreen({Key? key}) : super(key: key);
+/// ✓ FASE 2 RIVERPOD: Migrado a ConsumerStatefulWidget
+class LabelSettingsScreen extends ConsumerStatefulWidget {
+  const LabelSettingsScreen({super.key});
 
   @override
-  State<LabelSettingsScreen> createState() => _LabelSettingsScreenState();
+  ConsumerState<LabelSettingsScreen> createState() => _LabelSettingsScreenState();
 }
 
-class _LabelSettingsScreenState extends State<LabelSettingsScreen> {
+class _LabelSettingsScreenState extends ConsumerState<LabelSettingsScreen> {
   String _openPanel = 'fields';
 
   final List<Map<String, dynamic>> _fieldData = [
@@ -35,8 +36,8 @@ class _LabelSettingsScreenState extends State<LabelSettingsScreen> {
     });
   }
 
-  void _showFieldEditModal(BuildContext context, String fieldKey, LabelProvider provider) {
-    final settings = provider.settings;
+  void _showFieldEditModal(BuildContext context, String fieldKey, labelState) {
+    final settings = labelState.settings;
     final fieldName = _fieldData.firstWhere((f) => f['key'] == fieldKey, orElse: () => {'name': ''})['name'];
     final currentLayout = settings.fieldLayouts[fieldKey] ?? {};
 
@@ -154,7 +155,7 @@ class _LabelSettingsScreenState extends State<LabelSettingsScreen> {
                 TextButton(onPressed: () => Navigator.of(dialogContext).pop(), child: const Text('Cancelar')),
                 ElevatedButton(
                   onPressed: () {
-                    provider.updateFieldLayout(fieldKey, tempLayout);
+                    ref.read(labelProvider.notifier).updateFieldLayout(fieldKey, tempLayout);
                     Navigator.of(dialogContext).pop();
                   },
                   child: const Text('Guardar'),
@@ -169,8 +170,8 @@ class _LabelSettingsScreenState extends State<LabelSettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final provider = context.watch<LabelProvider>();
-    final settings = provider.settings;
+    final labelState = ref.watch(labelProvider);
+    final settings = labelState.settings;
 
     final exampleData = SerializableLabelData(
       displayName: 'Producto de Ejemplo con Nombre Largo',
@@ -197,7 +198,7 @@ class _LabelSettingsScreenState extends State<LabelSettingsScreen> {
           children: [
             LabelPreview(settings: settings, data: exampleData),
             const SizedBox(height: 24),
-            _buildSettingsAccordions(provider, settings),
+            _buildSettingsAccordions(labelState, settings),
           ],
         ),
       ),
@@ -217,7 +218,7 @@ class _LabelSettingsScreenState extends State<LabelSettingsScreen> {
     );
   }
 
-  Widget _buildSettingsAccordions(LabelProvider provider, LabelSettings settings) {
+  Widget _buildSettingsAccordions(labelState, LabelSettings settings) {
     return Column(
       children: [
         _AccordionItem(
@@ -246,11 +247,11 @@ class _LabelSettingsScreenState extends State<LabelSettingsScreen> {
                       IconButton(
                         icon: const Icon(Icons.edit_note, size: 22),
                         tooltip: 'Editar Estilos',
-                        onPressed: () => _showFieldEditModal(context, key, provider),
+                        onPressed: () => _showFieldEditModal(context, key, labelState),
                       ),
                       Switch(
                         value: settings.visibleAttributes[key] ?? false,
-                        onChanged: (checked) => provider.updateVisibleAttribute(key, checked),
+                        onChanged: (checked) => ref.read(labelProvider.notifier).updateVisibleAttribute(key, checked),
                         activeColor: Colors.red,
                       ),
                     ],
@@ -263,7 +264,7 @@ class _LabelSettingsScreenState extends State<LabelSettingsScreen> {
               final items = List<String>.from(settings.fieldOrder);
               final item = items.removeAt(oldIndex);
               items.insert(newIndex, item);
-              provider.updateFieldOrder(items);
+              ref.read(labelProvider.notifier).updateFieldOrder(items);
             },
           ),
         ),
@@ -273,7 +274,7 @@ class _LabelSettingsScreenState extends State<LabelSettingsScreen> {
           onToggle: () => _togglePanel('dimensions'),
           child: _DimensionsControl(
             settings: settings,
-            onLayoutChanged: provider.updateLabelLayout,
+            onLayoutChanged: ref.read(labelProvider.notifier).updateLabelLayout,
           ),
         ),
       ],

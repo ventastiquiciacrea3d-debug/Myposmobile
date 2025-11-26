@@ -3,17 +3,16 @@ import 'dart:convert';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-import 'package:flutter/foundation.dart';
 import 'package:collection/collection.dart';
 
-import '../providers/app_state_provider.dart';
-import '../providers/order_provider.dart';
+import '../providers/app_state_notifier.dart';
+import '../providers/order_notifier.dart';
 import '../services/storage_service.dart';
 import '../services/sync_manager.dart';
 import '../locator.dart';
@@ -24,12 +23,12 @@ import '../widgets/custom_fab_location.dart';
 import '../config/constants.dart';
 import '../config/routes.dart';
 
-class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({Key? key}) : super(key: key);
-  @override State<SettingsScreen> createState() => _SettingsScreenState();
+class SettingsScreen extends ConsumerStatefulWidget {
+  const SettingsScreen({super.key});
+  @override ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends State<SettingsScreen> {
+class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   final TextEditingController _apiUrlController = TextEditingController();
   final TextEditingController _myPosApiKeyController = TextEditingController();
   final TextEditingController _consumerKeyController = TextEditingController();
@@ -55,6 +54,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _scannerSoundEnabled = true;
   bool _autosyncEnabled = true;
   int _syncIntervalMinutes = 15;
+  // 🟢 NUEVO: Configuración de sincronización de inventario externo
+  bool _autoSyncProductsEnabled = true;
+  int _productsSyncIntervalSeconds = 300; // Default: 5 minutos
   late final SyncManager _syncManager;
   final Color _inactiveTrackColor = Colors.grey.shade300;
   final Color _inactiveThumbColor = Colors.grey.shade500;
@@ -77,7 +79,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await _loadAPICredentials();
       _isFirstRun = _prefsInstance?.getBool(firstRunPrefKey) ?? true;
     } catch(e) {
-      if (mounted) context.read<AppStateProvider>().setAppError("Error cargando ajustes: ${e.toString()}", durationSeconds: 10);
+      if (mounted) ref.read(appStateNotifierProvider.notifier).setAppError("Error cargando ajustes: ${e.toString()}", durationSeconds: 10);
     } finally {
       if (mounted) setState(() => _pageIsLoading = false);
     }
@@ -96,7 +98,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _loadSettings() async {
     final prefs = _prefsInstance;
     if (prefs == null || !mounted) return;
-    if(mounted) setState(() {
+    if(mounted) {
+      setState(() {
       _useBiometrics = prefs.getBool(useBiometricsPrefKey) ?? false;
       _taxRateController.text = (prefs.getString(defaultTaxRatePrefKey) ?? '13.0');
       _manualScanModeEnabled = prefs.getBool(manualScanModePrefKey) ?? false;
@@ -108,11 +111,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _scannerSoundEnabled = prefs.getBool(scannerSoundPrefKey) ?? true;
       _autosyncEnabled = prefs.getBool(autosyncPrefKey) ?? true;
       _syncIntervalMinutes = prefs.getInt(syncIntervalPrefKey) ?? 15;
+      // 🟢 NUEVO: Cargar configuración de sincronización de inventario
+      _autoSyncProductsEnabled = prefs.getBool(autoSyncProductsPrefKey) ?? true;
+      _productsSyncIntervalSeconds = prefs.getInt(productsSyncIntervalPrefKey) ?? 300;
     });
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        final orderProvider = context.read<OrderProvider>();
-        orderProvider.setTaxRate((double.tryParse(_taxRateController.text.replaceAll(',','.')) ?? 13.0) / 100.0);
+        final orderNotifier = ref.read(currentOrderProvider.notifier);
+        orderNotifier.setTaxRate((double.tryParse(_taxRateController.text.replaceAll(',','.')) ?? 13.0) / 100.0);
       }
     });
   }
@@ -159,14 +166,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     FocusScope.of(context).unfocus();
     if(mounted) setState(() { _isTestingConnection = true; _testConnectionError = null; });
 
-    final appState = context.read<AppStateProvider>();
+    final appStateNotifier = ref.read(appStateNotifierProvider.notifier);
+    final appState = ref.read(appStateNotifierProvider);
     final scaffoldMessenger = ScaffoldMessenger.of(context);
     final prefs = _prefsInstance;
     final navigator = Navigator.of(context);
     final bool wasFirstRun = _isFirstRun;
 
     try {
-      final success = await appState.configureApp(
+      final success = await appStateNotifier.configureApp(
         apiUrl: _apiUrlController.text.trim(),
         consumerKey: _consumerKeyController.text.trim(),
         consumerSecret: _consumerSecretController.text.trim(),
@@ -176,7 +184,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (!mounted) return;
 
       if (!success) {
-        if(mounted) setState(() => _testConnectionError = appState.error ?? "Error desconocido en la configuración.");
+        if(mounted) setState(() => _testConnectionError = appState.appError ?? "Error desconocido en la configuración.");
       } else {
         if(mounted) setState(() { _testConnectionError = null; _isFirstRun = false; });
         if (prefs != null) await prefs.setBool(firstRunPrefKey, false);
@@ -215,10 +223,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onPressed: () async {
               Navigator.pop(dialogContext);
               final storage = getIt<StorageService>();
-              final appState = context.read<AppStateProvider>();
               await storage.clearApiCredentials();
-              await appState.loadAppConfiguration();
-              if(mounted) setState((){
+              await ref.read(appStateNotifierProvider.notifier).loadAppConfiguration();
+              if(mounted) {
+                setState((){
                 _apiUrlController.clear();
                 _consumerKeyController.clear();
                 _consumerSecretController.clear();
@@ -226,6 +234,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 _testConnectionError=null;
                 _isFirstRun = true;
               });
+              }
             },
             style: TextButton.styleFrom(foregroundColor: Colors.orange.shade800),
             child: const Text('CERRAR SESIÓN'),
@@ -250,8 +259,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onPressed: () async {
               Navigator.pop(dialogContext);
               final storage = getIt<StorageService>();
-              final appState = context.read<AppStateProvider>();
-              final orderProvider = context.read<OrderProvider>();
+              final orderNotifier = ref.read(currentOrderProvider.notifier);
               final prefs = _prefsInstance;
               final scaffoldMessenger = ScaffoldMessenger.of(context);
 
@@ -271,8 +279,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 final newStorage = getIt<StorageService>();
                 await newStorage.init();
 
-                await orderProvider.clearOrder();
-                await appState.loadAppConfiguration();
+                await orderNotifier.clearOrder();
+                await ref.read(appStateNotifierProvider.notifier).loadAppConfiguration();
 
                 if (mounted && Navigator.of(context, rootNavigator: true).canPop()){
                   Navigator.of(context, rootNavigator: true).pop();
@@ -310,7 +318,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         final credentials = Map<String, dynamic>.from(jsonDecode(data));
         if (credentials['siteUrl'] != null && credentials['apiKey'] != null) {
           if (mounted) {
-            context.read<AppStateProvider>().setConnectionMode('plugin');
+            ref.read(appStateNotifierProvider.notifier).setConnectionMode('plugin');
             setState(() {
               _apiUrlController.text = credentials['siteUrl'] ?? '';
               _myPosApiKeyController.text = credentials['apiKey'] ?? '';
@@ -415,7 +423,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _processQrCode(barcode.rawValue!);
             }
           },
-          errorBuilder: (context, error, child) {
+          errorBuilder: (context, error) {
             return Center(child: Text("Error del escáner: ${error.errorDetails?.message ?? error.errorCode.name}", style: const TextStyle(color: Colors.white)));
           },
         ),
@@ -426,9 +434,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _buildSettingsListView(BuildContext context, SharedPreferences prefs) {
-    return Consumer<AppStateProvider>(
-      builder: (context, appState, _) {
-        final List<Widget Function(BuildContext, SyncManager)> currentSectionBuilders = [
+    final appState = ref.watch(appStateNotifierProvider);
+    final List<Widget Function(BuildContext, SyncManager)> currentSectionBuilders = [
               (ctx, sm) => _ApiConfigSection(
             apiUrlController: _apiUrlController,
             myPosApiKeyController: _myPosApiKeyController,
@@ -452,6 +459,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onIntervalChanged: (v) async { if (v != null) { if(mounted) setState(() => _syncIntervalMinutes = v); await prefs.setInt(syncIntervalPrefKey, v); }},
               onSyncNow: _syncOnlineData, syncManager: sm,
             ),
+                // 🟢 NUEVO: Sección de sincronización de inventario externo
+                (ctx, sm) => _ProductsSyncSettingsSection(
+              prefs: prefs,
+              autoSyncEnabled: _autoSyncProductsEnabled,
+              syncIntervalSeconds: _productsSyncIntervalSeconds,
+              inactiveTrackColor: _inactiveTrackColor,
+              inactiveThumbColor: _inactiveThumbColor,
+              onAutoSyncChanged: (v) async {
+                if(mounted) setState(() => _autoSyncProductsEnabled = v);
+                await prefs.setBool(autoSyncProductsPrefKey, v);
+                // Notificar al servicio de polling del cambio
+                final pollingService = ref.read(appStateNotifierProvider.notifier).pollingService;
+                if (pollingService != null) {
+                  // El servicio leerá la configuración en su próxima iteración
+                }
+              },
+              onIntervalChanged: (v) async {
+                if (v != null) {
+                  if(mounted) setState(() => _productsSyncIntervalSeconds = v);
+                  await prefs.setInt(productsSyncIntervalPrefKey, v);
+                }
+              },
+            ),
                 (ctx, sm) => _ScannerSettingsSection(
               prefs: prefs,
               manualScanModeEnabled: _manualScanModeEnabled,
@@ -472,7 +502,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onTaxRateChanged: (v) async {
                 final rate = double.tryParse(v.replaceAll(',','.')) ?? 0.0;
                 await prefs.setString(defaultTaxRatePrefKey, rate.toStringAsFixed(1));
-                if (mounted) { context.read<OrderProvider>().setTaxRate(rate / 100.0); }
+                if (mounted) { ref.read(currentOrderProvider.notifier).setTaxRate(rate / 100.0); }
               },
             ),
                 (ctx, sm) => _DiscountSettingsSection(
@@ -495,23 +525,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
         final int itemCount = currentSectionBuilders.length + 1;
 
-        return ListView.builder(
-          padding: const EdgeInsets.all(16).copyWith(bottom: 80),
-          itemCount: itemCount,
-          itemBuilder: (context, index) {
-            if (index < currentSectionBuilders.length) {
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 16),
-                child: currentSectionBuilders[index](context, _syncManager),
-              );
-            } else {
-              return Padding(
-                padding: const EdgeInsets.only(top: 16.0),
-                child: Center( child: Text( 'MY POS MOBILE BARCODE v$_appVersion', style: TextStyle( color: Colors.grey.shade600, fontSize: 12, ), ), ),
-              );
-            }
-          },
-        );
+    return ListView.builder(
+      padding: const EdgeInsets.all(16).copyWith(bottom: 80),
+      itemCount: itemCount,
+      itemBuilder: (context, index) {
+        if (index < currentSectionBuilders.length) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 16),
+            child: currentSectionBuilders[index](context, _syncManager),
+          );
+        } else {
+          return Padding(
+            padding: const EdgeInsets.only(top: 16.0),
+            child: Center( child: Text( 'MY POS MOBILE BARCODE v$_appVersion', style: TextStyle( color: Colors.grey.shade600, fontSize: 12, ), ), ),
+          );
+        }
       },
     );
   }
@@ -556,7 +584,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final appState = context.watch<AppStateProvider>();
+    final appState = ref.watch(appStateNotifierProvider);
     final bool canGoBack = Navigator.canPop(context);
     final bool actuallyShowFirstRunScreen = _isFirstRun && !appState.isAppConfigured;
     final theme = Theme.of(context);
@@ -608,7 +636,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 }
 
-class _ApiConfigSection extends StatelessWidget {
+class _ApiConfigSection extends ConsumerWidget {
   final TextEditingController apiUrlController;
   final TextEditingController myPosApiKeyController;
   final TextEditingController consumerKeyController;
@@ -621,7 +649,6 @@ class _ApiConfigSection extends StatelessWidget {
   final VoidCallback onScanQr;
 
   const _ApiConfigSection({
-    Key? key,
     required this.apiUrlController,
     required this.myPosApiKeyController,
     required this.consumerKeyController,
@@ -632,17 +659,16 @@ class _ApiConfigSection extends StatelessWidget {
     required this.onShowKeysToggle,
     required this.onTestConnection,
     required this.onScanQr,
-  }) : super(key: key);
+  });
 
   @override
-  Widget build(BuildContext context) {
-    return Consumer<AppStateProvider>(
-      builder: (context, appState, _) {
-        final bool fieldsEnabled = !appState.isLoading && !isTestingConnection;
-        final String? displayError = testConnectionError ?? appState.error;
-        final bool usePluginMode = appState.connectionMode == 'plugin';
+  Widget build(BuildContext context, WidgetRef ref) {
+    final appState = ref.watch(appStateNotifierProvider);
+    final bool fieldsEnabled = !appState.isLoading && !isTestingConnection;
+    final String? displayError = testConnectionError ?? appState.appError;
+    final bool usePluginMode = appState.connectionMode == 'plugin';
 
-        return Card(
+    return Card(
           elevation: 1,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
           child: Padding(
@@ -672,7 +698,7 @@ class _ApiConfigSection extends StatelessWidget {
                   subtitle: const Text("Búsquedas más rápidas y seguras."),
                   value: usePluginMode,
                   onChanged: fieldsEnabled ? (value) {
-                    appState.setConnectionMode(value ? 'plugin' : 'woocommerce');
+                    ref.read(appStateNotifierProvider.notifier).setConnectionMode(value ? 'plugin' : 'woocommerce');
                   } : null,
                   contentPadding: EdgeInsets.zero,
                 ),
@@ -743,8 +769,6 @@ class _ApiConfigSection extends StatelessWidget {
             ),
           ),
         );
-      },
-    );
   }
 }
 
@@ -760,10 +784,10 @@ class _SyncSettingsSection extends StatelessWidget {
   final SyncManager syncManager;
 
   const _SyncSettingsSection({
-    Key? key, required this.prefs, required this.autosyncEnabled, required this.syncIntervalMinutes,
+    required this.prefs, required this.autosyncEnabled, required this.syncIntervalMinutes,
     required this.inactiveTrackColor, required this.inactiveThumbColor, required this.onAutosyncChanged,
     required this.onIntervalChanged, required this.onSyncNow, required this.syncManager,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -830,6 +854,125 @@ class _SyncSettingsSection extends StatelessWidget {
   }
 }
 
+// 🟢 NUEVO: Sección de configuración de sincronización de inventario externo
+class _ProductsSyncSettingsSection extends StatelessWidget {
+  final SharedPreferences prefs;
+  final bool autoSyncEnabled;
+  final int syncIntervalSeconds;
+  final Color inactiveTrackColor;
+  final Color inactiveThumbColor;
+  final ValueChanged<bool> onAutoSyncChanged;
+  final ValueChanged<int?> onIntervalChanged;
+
+  const _ProductsSyncSettingsSection({
+    required this.prefs,
+    required this.autoSyncEnabled,
+    required this.syncIntervalSeconds,
+    required this.inactiveTrackColor,
+    required this.inactiveThumbColor,
+    required this.onAutoSyncChanged,
+    required this.onIntervalChanged,
+  });
+
+  String _getIntervalLabel(int seconds) {
+    if (seconds == 30) return '30 segundos';
+    if (seconds == 60) return '1 minuto';
+    if (seconds == 180) return '3 minutos';
+    if (seconds == 300) return '5 minutos';
+    if (seconds == 600) return '10 minutos';
+    if (seconds == 900) return '15 minutos';
+    if (seconds == 1800) return '30 minutos';
+    return '$seconds segundos';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 1,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.inventory_2_outlined),
+                const SizedBox(width: 8),
+                const Text('Sincronización de Inventario', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              "Detecta automáticamente cambios de inventario realizados en WordPress (productos creados/modificados fuera de la app).",
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey.shade600),
+            ),
+            const SizedBox(height: 16),
+            SwitchListTile(
+              title: const Text('Sincronización automática'),
+              subtitle: const Text('Detectar cambios automáticamente en segundo plano'),
+              value: autoSyncEnabled,
+              inactiveTrackColor: inactiveTrackColor,
+              inactiveThumbColor: inactiveThumbColor,
+              onChanged: onAutoSyncChanged,
+              contentPadding: EdgeInsets.zero,
+            ),
+            if (autoSyncEnabled) ...[
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  const Icon(Icons.timer_outlined, size: 20),
+                  const SizedBox(width: 8),
+                  const Text('Intervalo de verificación:', style: TextStyle(fontWeight: FontWeight.w500)),
+                ],
+              ),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<int>(
+                value: syncIntervalSeconds,
+                decoration: InputDecoration(
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                items: const [
+                  DropdownMenuItem(value: 30, child: Text('30 segundos (frecuente)')),
+                  DropdownMenuItem(value: 60, child: Text('1 minuto')),
+                  DropdownMenuItem(value: 180, child: Text('3 minutos')),
+                  DropdownMenuItem(value: 300, child: Text('5 minutos (recomendado)')),
+                  DropdownMenuItem(value: 600, child: Text('10 minutos')),
+                  DropdownMenuItem(value: 900, child: Text('15 minutos')),
+                  DropdownMenuItem(value: 1800, child: Text('30 minutos (ahorro batería)')),
+                ],
+                onChanged: onIntervalChanged,
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.blue.shade200),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.info_outline, color: Colors.blue.shade700, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'La app verificará cambios cada ${_getIntervalLabel(syncIntervalSeconds)}. Intervalos más cortos consumen más batería.',
+                        style: TextStyle(color: Colors.blue.shade700, fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ScannerSettingsSection extends StatelessWidget {
   final SharedPreferences prefs;
   final bool manualScanModeEnabled;
@@ -850,13 +993,13 @@ class _ScannerSettingsSection extends StatelessWidget {
   final ValueChanged<String> onTaxRateChanged;
 
   const _ScannerSettingsSection({
-    Key? key, required this.prefs, required this.manualScanModeEnabled, required this.rapidScanModeEnabled,
+    required this.prefs, required this.manualScanModeEnabled, required this.rapidScanModeEnabled,
     required this.searchOnlyAvailableEnabled, required this.hideSearchImagesEnabled, required this.scannerVibrationEnabled,
     required this.scannerSoundEnabled, required this.taxRateController, required this.inactiveTrackColor,
     required this.inactiveThumbColor, required this.onManualScanChanged, required this.onRapidScanChanged,
     required this.onSearchOnlyAvailableChanged, required this.onHideImagesChanged, required this.onVibrationChanged,
     required this.onSoundChanged, required this.onTaxRateChanged,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -876,9 +1019,9 @@ class _DiscountSettingsSection extends StatelessWidget {
   final ValueChanged<bool> onDiscountsChanged;
 
   const _DiscountSettingsSection({
-    Key? key, required this.prefs, required this.individualDiscountsEnabled,
+    required this.prefs, required this.individualDiscountsEnabled,
     required this.inactiveTrackColor, required this.inactiveThumbColor, required this.onDiscountsChanged,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -896,10 +1039,10 @@ class _SecuritySection extends StatelessWidget {
   final VoidCallback onPinConfigure;
 
   const _SecuritySection({
-    Key? key, required this.prefs, required this.useBiometrics, required this.checkBiometricAvailability,
+    required this.prefs, required this.useBiometrics, required this.checkBiometricAvailability,
     required this.inactiveTrackColor, required this.inactiveThumbColor, required this.onBiometricsChanged,
     required this.onPinConfigure,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -911,7 +1054,7 @@ class _AccountSection extends StatelessWidget {
   final VoidCallback onLogout;
   final VoidCallback onReset;
 
-  const _AccountSection({ Key? key, required this.onLogout, required this.onReset, }) : super(key: key);
+  const _AccountSection({ required this.onLogout, required this.onReset, });
 
   @override
   Widget build(BuildContext context) {

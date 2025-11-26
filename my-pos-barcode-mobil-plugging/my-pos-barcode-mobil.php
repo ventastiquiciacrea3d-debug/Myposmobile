@@ -3,13 +3,15 @@
  * Plugin Name:       MY POS BARCODE MOBIL
  * Plugin URI:        https://tudominio.com
  * Description:       Crea un endpoint de API optimizado con caché para la app móvil y una página de configuración avanzada.
- * Version:           3.0.0
+ * Version:           3.2.0
  * Author:            Tu Nombre
  * Author URI:        https://tudominio.com
  * License:           GPL v2 or later
  * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain:       my-pos-barcode-mobil
  * Domain Path:       /languages
+ * Requires at least: 5.8
+ * Requires PHP:      7.4
  */
 
 if (!defined('WPINC')) {
@@ -20,7 +22,12 @@ define('MPBM_PLUGIN_FILE', __FILE__);
 define('MPBM_PLUGIN_PATH', plugin_dir_path(MPBM_PLUGIN_FILE));
 define('MPBM_PLUGIN_URL', plugin_dir_url(MPBM_PLUGIN_FILE));
 
+// ✅ Cargar auto-installer primero
+require_once MPBM_PLUGIN_PATH . 'includes/auto-installer.php';
+
+// ✅ Registrar hooks de activación/desactivación
 register_activation_hook(MPBM_PLUGIN_FILE, 'mpbm_activate_plugin');
+register_deactivation_hook(MPBM_PLUGIN_FILE, 'mpbm_deactivate_plugin');
 
 function mpbm_run_plugin() {
     if (!class_exists('WooCommerce')) {
@@ -45,11 +52,74 @@ function mpbm_include_files_and_init_hooks() {
     require_once MPBM_PLUGIN_PATH . 'includes/api-endpoints.php';
     require_once MPBM_PLUGIN_PATH . 'includes/class-mypos-ajax.php';
 
+    // ✅ DELTA SYNC: Track product changes
+    require_once MPBM_PLUGIN_PATH . 'includes/delta-sync-tracker.php';
+    require_once MPBM_PLUGIN_PATH . 'includes/api-endpoints-delta.php';
+
+    // ✅ POLLING INTELIGENTE: Endpoints ligeros (reemplaza FCM)
+    require_once MPBM_PLUGIN_PATH . 'includes/api-endpoints-polling.php';
+
+    // 🟢 PRIORIDAD 3: Endpoint delta para pedidos
+    require_once MPBM_PLUGIN_PATH . 'includes/api-endpoint-orders-only.php';
+
+    // 🟢 NUEVO: Hooks mejorados para detectar TODOS los cambios de inventario
+    require_once MPBM_PLUGIN_PATH . 'includes/product-change-hooks.php';
+
     new MPBM_Ajax_Handler();
     new MPBM_Inventory_Logger();
 
     add_action('admin_enqueue_scripts', 'mpbm_admin_enqueue_scripts');
     add_filter('plugin_action_links_' . plugin_basename(MPBM_PLUGIN_FILE), 'mpbm_add_settings_link');
+
+    // ✓ OPTIMIZADO: Invalidar cache de búsquedas cuando se actualiza un producto
+    add_action('woocommerce_update_product', 'mpbm_clear_search_cache');
+    add_action('woocommerce_new_product', 'mpbm_clear_search_cache');
+    add_action('woocommerce_delete_product', 'mpbm_clear_search_cache');
+    add_action('woocommerce_update_product_variation', 'mpbm_clear_search_cache');
+    add_action('woocommerce_new_product_variation', 'mpbm_clear_search_cache');
+    add_action('woocommerce_delete_product_variation', 'mpbm_clear_search_cache');
+}
+
+/**
+ * Limpia el cache de búsquedas cuando se modifica un producto.
+ * ✓ OPTIMIZADO: Limpia tanto transients como cache de objetos.
+ *
+ * @param int $product_id ID del producto modificado
+ */
+function mpbm_clear_search_cache($product_id = 0) {
+    global $wpdb;
+
+    // 1. Eliminar todos los transients de búsqueda
+    $wpdb->query("
+        DELETE FROM {$wpdb->options}
+        WHERE option_name LIKE '_transient_mpbm_search_%'
+           OR option_name LIKE '_transient_timeout_mpbm_search_%'
+    ");
+
+    // 2. Limpiar cache de objeto para el producto específico
+    if ($product_id > 0) {
+        wp_cache_delete("mpbm_product_data_{$product_id}_light", 'mpbm_products');
+        wp_cache_delete("mpbm_product_data_{$product_id}_full", 'mpbm_products');
+
+        // Si es un producto variable, limpiar también sus variaciones
+        $product = wc_get_product($product_id);
+        if ($product && $product->is_type('variable')) {
+            $variation_ids = $product->get_children();
+            foreach ($variation_ids as $variation_id) {
+                wp_cache_delete("mpbm_product_data_{$variation_id}_light", 'mpbm_products');
+                wp_cache_delete("mpbm_product_data_{$variation_id}_full", 'mpbm_products');
+            }
+        }
+
+        // Si es una variación, limpiar también el producto padre
+        if ($product && $product->is_type('variation')) {
+            $parent_id = $product->get_parent_id();
+            if ($parent_id > 0) {
+                wp_cache_delete("mpbm_product_data_{$parent_id}_light", 'mpbm_products');
+                wp_cache_delete("mpbm_product_data_{$parent_id}_full", 'mpbm_products');
+            }
+        }
+    }
 }
 
 function mpbm_admin_enqueue_scripts($hook) {
@@ -80,34 +150,6 @@ function mpbm_add_settings_link($links) {
     return $links;
 }
 
-function mpbm_activate_plugin() {
-    global $wpdb;
-    $table_name = $wpdb->prefix . 'mpbm_inventory_log';
-    $charset_collate = $wpdb->get_charset_collate();
-
-    $sql = "CREATE TABLE $table_name (
-        id bigint(20) NOT NULL AUTO_INCREMENT,
-        movement_id varchar(36) NOT NULL,
-        product_id bigint(20) NOT NULL,
-        variation_id bigint(20) DEFAULT 0,
-        product_name varchar(255) NOT NULL,
-        sku varchar(100) DEFAULT '' NOT NULL,
-        quantity_changed int(11) NOT NULL,
-        stock_before int(11) NULL,
-        stock_after int(11) NULL,
-        reason varchar(255) NOT NULL,
-        description text,
-        user_id bigint(20) NOT NULL,
-        log_date datetime DEFAULT '0000-00-00 00:00:00' NOT NULL,
-        PRIMARY KEY (id),
-        KEY movement_id (movement_id)
-    ) $charset_collate;";
-
-    require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
-    dbDelta($sql);
-
-    // Generar una clave de API inicial si no existe
-    if (get_option('mpbm_api_key') === false) {
-        update_option('mpbm_api_key', wp_generate_uuid4());
-    }
-}
+// ✅ NOTA: Las funciones mpbm_activate_plugin(), mpbm_deactivate_plugin() y
+// mpbm_create_performance_indices() ahora están en includes/auto-installer.php
+// para evitar duplicación. Se ejecutan automáticamente al activar/desactivar el plugin.

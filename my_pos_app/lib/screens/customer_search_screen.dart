@@ -1,20 +1,21 @@
 // lib/screens/customer_search_screen.dart
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../providers/customer_provider.dart';
+import '../providers/customer_notifier.dart';
 import '../widgets/app_header.dart';
 import '../config/routes.dart';
 
-class CustomerSearchScreen extends StatefulWidget {
-  const CustomerSearchScreen({Key? key}) : super(key: key);
+/// ✓ FASE 2 RIVERPOD: Migrado a ConsumerStatefulWidget
+class CustomerSearchScreen extends ConsumerStatefulWidget {
+  const CustomerSearchScreen({super.key});
 
   @override
-  State<CustomerSearchScreen> createState() => _CustomerSearchScreenState();
+  ConsumerState<CustomerSearchScreen> createState() => _CustomerSearchScreenState();
 }
 
-class _CustomerSearchScreenState extends State<CustomerSearchScreen> {
+class _CustomerSearchScreenState extends ConsumerState<CustomerSearchScreen> {
   final TextEditingController _searchController = TextEditingController();
   Timer? _debounce;
 
@@ -23,7 +24,7 @@ class _CustomerSearchScreenState extends State<CustomerSearchScreen> {
     super.initState();
     _searchController.addListener(_onSearchChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<CustomerProvider>().clearSearch();
+      ref.read(customerProvider.notifier).clearSearch();
     });
   }
 
@@ -39,7 +40,7 @@ class _CustomerSearchScreenState extends State<CustomerSearchScreen> {
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 500), () {
       if (mounted) {
-        context.read<CustomerProvider>().searchCustomers(_searchController.text);
+        ref.read(customerProvider.notifier).searchCustomers(_searchController.text);
       }
     });
   }
@@ -64,8 +65,7 @@ class _CustomerSearchScreenState extends State<CustomerSearchScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final customerProvider = context.watch<CustomerProvider>();
-    final theme = Theme.of(context);
+    final customerState = ref.watch(customerProvider);
 
     return Scaffold(
       appBar: AppHeader(
@@ -88,7 +88,7 @@ class _CustomerSearchScreenState extends State<CustomerSearchScreen> {
                   icon: const Icon(Icons.clear),
                   onPressed: () {
                     _searchController.clear();
-                    customerProvider.clearSearch();
+                    ref.read(customerProvider.notifier).clearSearch();
                   },
                 )
                     : null,
@@ -102,17 +102,17 @@ class _CustomerSearchScreenState extends State<CustomerSearchScreen> {
           ),
           const Divider(height: 1),
           Expanded(
-            child: customerProvider.isLoading
+            child: customerState.isLoading
                 ? const Center(child: CircularProgressIndicator())
-                : customerProvider.error != null && customerProvider.displayCustomers.isEmpty
-                ? Center(child: Text(customerProvider.error!, style: TextStyle(color: Colors.red.shade700)))
-                : customerProvider.displayCustomers.isEmpty && _searchController.text.isNotEmpty
+                : customerState.error != null && customerState.displayCustomers.isEmpty
+                ? Center(child: Text(customerState.error!, style: TextStyle(color: Colors.red.shade700)))
+                : customerState.displayCustomers.isEmpty && _searchController.text.isNotEmpty
                 ? const Center(child: Text("No se encontraron clientes."))
                 : ListView.separated(
-              itemCount: customerProvider.displayCustomers.length,
+              itemCount: customerState.displayCustomers.length,
               separatorBuilder: (context, index) => const Divider(height: 1, indent: 16, endIndent: 16),
               itemBuilder: (context, index) {
-                final customer = customerProvider.displayCustomers[index];
+                final customer = customerState.displayCustomers[index];
                 final fullName = '${customer['first_name'] ?? ''} ${customer['last_name'] ?? ''}'.trim();
                 return ListTile(
                   leading: CircleAvatar(child: Text(fullName.isNotEmpty ? fullName[0].toUpperCase() : '?')),

@@ -245,7 +245,7 @@ class Product extends HiveObject {
     regularPriceValue ??= effectivePrice;
 
     final bool onSaleApiValue = pBool(json['on_sale'], d: false) ||
-        (salePriceValue != null && regularPriceValue != null && salePriceValue < regularPriceValue && salePriceValue == effectivePrice);
+        (salePriceValue != null && salePriceValue < regularPriceValue && salePriceValue == effectivePrice);
 
     List<Map<String, dynamic>> parsedAttributesForThisInstance = [];
     List<Map<String, dynamic>> parsedFullAttributesForParentVariable = [];

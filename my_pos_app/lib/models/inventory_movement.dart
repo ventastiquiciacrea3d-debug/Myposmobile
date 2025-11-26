@@ -100,12 +100,12 @@ class InventoryMovementLine extends HiveObject {
   }) {
     return InventoryMovementLine(
       productId: productId ?? this.productId,
-      variationId: getVariationId != null ? getVariationId() : this.variationId,
+      variationId: getVariationId != null ? getVariationId() : variationId,
       productName: productName ?? this.productName,
       sku: sku ?? this.sku,
       quantityChanged: quantityChanged ?? this.quantityChanged,
-      stockBefore: getStockBefore != null ? getStockBefore() : this.stockBefore,
-      stockAfter: getStockAfter != null ? getStockAfter() : this.stockAfter,
+      stockBefore: getStockBefore != null ? getStockBefore() : stockBefore,
+      stockAfter: getStockAfter != null ? getStockAfter() : stockAfter,
     );
   }
 }
@@ -195,8 +195,8 @@ class InventoryMovement extends HiveObject {
       type: type ?? this.type,
       description: description ?? this.description,
       items: items ?? List<InventoryMovementLine>.from(this.items.map((item) => item.copyWith())),
-      referenceId: getReferenceId != null ? getReferenceId() : this.referenceId,
-      userId: getUserId != null ? getUserId() : this.userId,
+      referenceId: getReferenceId != null ? getReferenceId() : referenceId,
+      userId: getUserId != null ? getUserId() : userId,
       isSynced: isSynced ?? this.isSynced,
       userName: userName ?? this.userName,
     );

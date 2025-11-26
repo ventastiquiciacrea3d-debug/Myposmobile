@@ -1,40 +1,39 @@
 // lib/widgets/add_to_cart_dialog.dart
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:flutter/foundation.dart';
 import 'dart:async';
 import 'package:collection/collection.dart';
 
 import '../models/product.dart' as app_product;
-import '../providers/order_provider.dart';
+import '../providers/order_notifier.dart';
 import '../repositories/product_repository.dart';
 import '../services/woocommerce_service.dart';
 import '../locator.dart';
 import 'quantity_selector.dart';
 
-class AddToCartDialog extends StatefulWidget {
+class AddToCartDialog extends ConsumerStatefulWidget {
   final String productId;
 
-  const AddToCartDialog({Key? key, required this.productId}) : super(key: key);
+  const AddToCartDialog({super.key, required this.productId});
 
   @override
-  State<AddToCartDialog> createState() => _AddToCartDialogState();
+  ConsumerState<AddToCartDialog> createState() => _AddToCartDialogState();
 }
 
-class _AddToCartDialogState extends State<AddToCartDialog> {
+class _AddToCartDialogState extends ConsumerState<AddToCartDialog> {
   app_product.Product? _product; // Siempre el producto padre si es variable
   bool _isLoadingProduct = true;
   String? _productLoadError;
   int _selectedQuantity = 1;
   final currencyFormat = NumberFormat.currency(locale: 'es_CR', symbol: '₡');
 
-  Map<String, String?> _selectedAttributes = {};
+  final Map<String, String?> _selectedAttributes = {};
   app_product.Product? _selectedVariationProduct;
   bool _isLoadingVariation = false;
   String? _variationError;
-  List<Map<String, dynamic>> _configurableAttributesUI = [];
+  final List<Map<String, dynamic>> _configurableAttributesUI = [];
   List<app_product.Product> _availableVariations = [];
 
   double _currentDisplayPrice = 0.0;
@@ -100,8 +99,9 @@ class _AddToCartDialogState extends State<AddToCartDialog> {
     } catch (e) {
       if (mounted) {
         String errorMessage = "Error cargando: ${e.toString()}";
-        if (e is ProductNotFoundException) errorMessage = "Producto o variante no encontrado.";
-        else if (e is NetworkException) errorMessage = "Error de red al cargar el producto.";
+        if (e is ProductNotFoundException) {
+          errorMessage = "Producto o variante no encontrado.";
+        } else if (e is NetworkException) errorMessage = "Error de red al cargar el producto.";
         else if (e is ApiException) errorMessage = "Error de API: ${e.message}";
         setState(() => _productLoadError = errorMessage);
       }
@@ -300,7 +300,7 @@ class _AddToCartDialogState extends State<AddToCartDialog> {
 
   void _addToCart() {
     if (!mounted) return;
-    final orderProvider = context.read<OrderProvider>();
+    final orderNotifier = ref.read(currentOrderProvider.notifier);
     final productToAdd = _selectedVariationProduct ?? _product;
 
     if (productToAdd == null || _selectedQuantity <= 0 || !_currentIsAvailable) {
@@ -321,7 +321,7 @@ class _AddToCartDialogState extends State<AddToCartDialog> {
       }).toList();
     }
 
-    orderProvider.addProduct(
+    orderNotifier.addProduct(
       productToAdd,
       _selectedQuantity,
       explicitAttributes: attributesForOrder,
@@ -373,11 +373,11 @@ class _AddToCartDialogState extends State<AddToCartDialog> {
           ),
           if (_product!.isVariable && _configurableAttributesUI.isNotEmpty) ...[
             const Divider(height: 24),
-            ..._configurableAttributesUI.map((attr) => _buildAttributeSelector(attr)).toList(),
+            ..._configurableAttributesUI.map((attr) => _buildAttributeSelector(attr)),
             if (_variationError != null) Padding(padding: const EdgeInsets.only(top: 8.0), child: Text(_variationError!, style: TextStyle(color: Colors.red.shade700, fontSize: 12))),
           ],
           const SizedBox(height:12),
-          Row( mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [ Text('Cantidad:', style: theme.textTheme.titleMedium), QuantitySelector( key: ValueKey('${productForDisplay.id}_qtySelector_${_selectedQuantity}'), value: _selectedQuantity, minValue: 0,
+          Row( mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [ Text('Cantidad:', style: theme.textTheme.titleMedium), QuantitySelector( key: ValueKey('${productForDisplay.id}_qtySelector_$_selectedQuantity'), value: _selectedQuantity, minValue: 0,
             maxValue: _currentIsAvailable ? (_currentStockQuantity == -1 ? 9999 : _currentStockQuantity) : 0,
             onChanged: (value) { if (mounted) setState(() => _selectedQuantity = value); },
           ),
@@ -441,12 +441,12 @@ class _AddToCartDialogState extends State<AddToCartDialog> {
 
 class _LoadingDialogContent extends StatelessWidget {
   final String message;
-  const _LoadingDialogContent({this.message = "Cargando...", Key? key}) : super(key: key);
+  const _LoadingDialogContent({this.message = "Cargando..."});
   @override Widget build(BuildContext context) { return Dialog( shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)), child: Padding(padding: const EdgeInsets.all(20.0), child: Row(mainAxisSize: MainAxisSize.min, children: [const CircularProgressIndicator(), const SizedBox(width:20), Text(message)]) ) ); }
 }
 
 class _ErrorDialogContent extends StatelessWidget {
   final String errorMessage;
-  const _ErrorDialogContent({required this.errorMessage, Key? key}) : super(key: key);
+  const _ErrorDialogContent({required this.errorMessage});
   @override Widget build(BuildContext context) { return AlertDialog( shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)), title: const Row(children: [Icon(Icons.error_outline, color: Colors.red), SizedBox(width: 8), Text("Error")]), content: SizedBox( width: double.maxFinite, child: Text(errorMessage, textAlign: TextAlign.center,) ), actions: [ TextButton( onPressed: () => Navigator.pop(context), child: const Text("CERRAR") ) ], ); }
 }

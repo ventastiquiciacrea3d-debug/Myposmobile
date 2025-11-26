@@ -14,29 +14,52 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'repositories/inventory_repository.dart';
 import 'repositories/order_repository.dart';
 import 'repositories/product_repository.dart';
+import 'services/auto_cleanup_service.dart';
+import 'services/cache_warming_service.dart';
+import 'services/circuit_breaker_service.dart';
 import 'services/connectivity_service.dart';
 import 'services/csv_service.dart';
+import 'services/database_service.dart';
+import 'services/delta_sync_service.dart'; // ✅ V3.1.0: Ahora SIN Firebase
+import 'services/feedback_service.dart';
+import 'services/lazy_loading_service.dart';
 import 'services/storage_service.dart';
 import 'services/sync_manager.dart';
+import 'services/transaction_service.dart';
 import 'services/woocommerce_service.dart';
+import 'services/data_migration_service.dart';
+
+// ✅ OPTIMIZACIÓN EXTREMA: Nuevos servicios de batería y almacenamiento
+import 'services/event_driven_polling_service.dart';
+import 'services/screen_state_service.dart';
+// import 'services/background_sync_service.dart';  // ❌ ELIMINADO - WorkManager removido
+import 'services/ultra_optimized_polling_service.dart';
+import 'utils/attribute_compressor.dart';
 
 final getIt = GetIt.instance;
 
-/// Función pública para registrar todos los adaptadores de Hive.
-/// Puede ser llamada desde el hilo principal y desde el servicio de fondo.
+/// Función pública para registrar adaptadores de Hive.
+/// Solo registra adapters para datos que AÚN están en Hive (no migrados a ObjectBox).
 void registerHiveAdapters() {
   try {
     // Se usa un try-catch por si un adaptador ya está registrado durante un hot-reload.
+
+    // ❌ MIGRADOS A OBJECTBOX - Ya no se usan (mantener comentado para migración legacy)
     if (!Hive.isAdapterRegistered(0)) Hive.registerAdapter(ProductAdapter());
     if (!Hive.isAdapterRegistered(1)) Hive.registerAdapter(OrderAdapter());
     if (!Hive.isAdapterRegistered(2)) Hive.registerAdapter(OrderItemAdapter());
-    if (!Hive.isAdapterRegistered(4)) Hive.registerAdapter(InventoryMovementTypeAdapter());
-    if (!Hive.isAdapterRegistered(5)) Hive.registerAdapter(InventoryMovementLineAdapter());
     if (!Hive.isAdapterRegistered(6)) Hive.registerAdapter(InventoryMovementAdapter());
     if (!Hive.isAdapterRegistered(7)) Hive.registerAdapter(LabelPrintItemAdapter());
+
+    // ⚠️ MANTENER TEMPORALMENTE - Usado en DataMigrationService
+    if (!Hive.isAdapterRegistered(4)) Hive.registerAdapter(InventoryMovementTypeAdapter());
+    if (!Hive.isAdapterRegistered(5)) Hive.registerAdapter(InventoryMovementLineAdapter());
+
+    // ✅ AÚN EN HIVE - Configuración y sistema
     if (!Hive.isAdapterRegistered(8)) Hive.registerAdapter(InventoryAdjustmentCacheAdapter());
     if (!Hive.isAdapterRegistered(9)) Hive.registerAdapter(SyncOperationTypeAdapter());
     if (!Hive.isAdapterRegistered(10)) Hive.registerAdapter(SyncOperationAdapter());
+    if (!Hive.isAdapterRegistered(11)) Hive.registerAdapter(SyncOperationStatusAdapter());
   } catch (e) {
     debugPrint("[registerHiveAdapters] Advertencia durante registro: $e");
   }
@@ -59,9 +82,32 @@ Future<void> setupLocator() async {
     return storageService;
   }, dependsOn: [SharedPreferences]);
 
+  // ✅ DELTA SYNC: ObjectBox database
+  getIt.registerSingletonAsync<DatabaseService>(() async {
+    await getIt.isReady<StorageService>();
+    return await DatabaseService.getInstance();
+  }, dependsOn: [StorageService]);
+
   // Make other services depend on StorageService to ensure correct order
   getIt.registerLazySingleton<ConnectivityService>(() => ConnectivityService());
   getIt.registerLazySingleton<CsvService>(() => CsvService());
+
+  // ✓ PROPUESTA 4: Circuit Breaker Service para protección API
+  getIt.registerLazySingleton<CircuitBreakerService>(() => CircuitBreakerService(
+    config: const CircuitBreakerConfig(
+      failureThreshold: 5,
+      resetTimeout: Duration(seconds: 30),
+      successThreshold: 2,
+      requestTimeout: Duration(seconds: 15),
+      failureWindow: Duration(minutes: 1),
+    ),
+  ));
+
+  // ✓ PROPUESTA 7: Feedback Service para UI feedback visual
+  getIt.registerLazySingleton<FeedbackService>(() => FeedbackService());
+
+  // ✓ PROPUESTA 3: Transaction Service para transacciones ACID
+  getIt.registerLazySingleton<TransactionService>(() => TransactionService());
 
   getIt.registerLazySingleton<WooCommerceService>(() => WooCommerceService(
     storageService: getIt<StorageService>(),
@@ -75,12 +121,56 @@ Future<void> setupLocator() async {
     wooCommerceService: getIt<WooCommerceService>(),
     storageService: getIt<StorageService>(),
     connectivityService: getIt<ConnectivityService>(),
+    databaseService: getIt<DatabaseService>(),
+  ));
+
+  // ✅ DELTA SYNC: Services for optimized product synchronization
+  getIt.registerLazySingleton<LazyLoadingService>(() => LazyLoadingService(
+    getIt<DatabaseService>(),
+  ));
+
+  getIt.registerLazySingleton<AutoCleanupService>(() => AutoCleanupService(
+    getIt<DatabaseService>(),
+  ));
+
+  // ✅ V3.1.0: DeltaSyncService - Sincronización incremental sin Firebase
+  getIt.registerLazySingleton<DeltaSyncService>(() => DeltaSyncService(
+    wooService: getIt<WooCommerceService>(),
+    storageService: getIt<StorageService>(),
+  ));
+
+  // Nota: DeltaSyncService se inicializará de forma lazy cuando se use por primera vez
+
+  // ✅ OPTIMIZACIÓN EXTREMA: Servicios de polling inteligente y batería
+  getIt.registerLazySingleton<UltraOptimizedPollingService>(() => UltraOptimizedPollingService(
+    wooService: getIt<WooCommerceService>(),
+  ));
+
+  getIt.registerLazySingleton<ScreenStateService>(() => ScreenStateService(
+    onScreenOff: () => debugPrint('[App] Screen OFF - pausing polling'),
+    onScreenOn: () => debugPrint('[App] Screen ON - resuming polling'),
+    onScreenUnlocked: () => debugPrint('[App] Screen UNLOCKED - active polling'),
+  ));
+
+  getIt.registerLazySingleton<EventDrivenPollingService>(() => EventDrivenPollingService(
+    pollingService: getIt<UltraOptimizedPollingService>(),
+  ));
+
+  // ❌ BackgroundSyncService - ELIMINADO (WorkManager removido)
+  // El sync en background ahora es manejado por UltraOptimizedPollingService + SyncManager
+
+  // ✅ OPTIMIZACIÓN EXTREMA: Utilities
+  getIt.registerLazySingleton<AttributeCompressor>(() => AttributeCompressor(
+    getIt<DatabaseService>(),
   ));
 
   // REPOSITORIES
   getIt.registerLazySingleton<ProductRepository>(() => ProductRepository());
   getIt.registerLazySingleton<OrderRepository>(() => OrderRepository());
   getIt.registerLazySingleton<InventoryRepository>(() => InventoryRepository());
+
+  // ✓ PROPUESTA 1: Cache Warming Service (depende de repositories)
+  getIt.registerLazySingleton<CacheWarmingService>(() => CacheWarmingService());
 
   // Ensure all async singletons are ready before proceeding
   await getIt.allReady();
@@ -101,7 +191,7 @@ Future<void> setupBackgroundLocator() async {
     getIt.registerSingletonAsync<StorageService>(() async {
       await getIt.isReady<SharedPreferences>();
       final storageService = StorageService();
-      await storageService.init();
+      await storageService.init(isBackgroundService: true); // ✅ CRÍTICO: Background service NO debe usar ObjectBox
       return storageService;
     }, dependsOn: [SharedPreferences]);
   }
@@ -122,9 +212,27 @@ Future<void> setupBackgroundLocator() async {
       wooCommerceService: getIt<WooCommerceService>(),
       storageService: getIt<StorageService>(),
       connectivityService: getIt<ConnectivityService>(),
+      databaseService: null, // ✅ CRÍTICO: El background service NO debe usar ObjectBox
     ));
   }
 
   // Wait for async singletons in the background isolate
   await getIt.allReady();
+}
+
+/// ⚠️ DEPRECADO: DataMigrationService ya no necesita boxes Hive
+/// Las migraciones Products, Orders, Labels, Settings ya se completaron
+///
+/// **Uso:** Solo para ejecutar migración una vez en SplashScreen (ya completado)
+DataMigrationService createDataMigrationService() {
+  final dbService = getIt<DatabaseService>();
+
+  return DataMigrationService(
+    dbService: dbService,
+    settingsBox: null,  // ❌ MIGRADO a SharedPreferences - Ya no usa Hive
+    productBox: null,  // ❌ MIGRADO a ObjectBox - Ya no usa Hive
+    orderBox: null,  // ❌ MIGRADO a ObjectBox - Ya no usa Hive
+    pendingOrderBox: null,  // ❌ MIGRADO a ObjectBox - Ya no usa Hive
+    labelQueueBox: null,  // ❌ MIGRADO a ObjectBox - Ya no usa Hive
+  );
 }

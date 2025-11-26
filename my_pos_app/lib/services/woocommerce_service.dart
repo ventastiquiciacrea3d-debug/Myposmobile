@@ -12,8 +12,9 @@ import '../models/order.dart';
 import '../models/inventory_movement.dart';
 import 'storage_service.dart';
 import 'connectivity_service.dart';
-import '../locator.dart';
-import '../config/constants.dart';
+import 'dio_retry_interceptor.dart';
+import 'api_cache_manager.dart';
+import 'package:dio_cache_interceptor/dio_cache_interceptor.dart';
 
 // --- Excepciones ---
 class ApiException implements Exception {
@@ -83,15 +84,39 @@ class WooCommerceService {
         throw InvalidDataException("Formato de URL de la tienda inválido.");
       }
 
-      _dio = Dio(BaseOptions(
+      // ✓✓✓ CRÍTICO: Configuración de timeouts EXPLÍCITA
+      final baseOptions = BaseOptions(
         baseUrl: sanitizedUrl,
-        connectTimeout: const Duration(seconds: 20),
-        receiveTimeout: const Duration(seconds: 120),
+        connectTimeout: const Duration(seconds: 15), // ✓ OPTIMIZADO: Reducido de 20s
+        receiveTimeout: const Duration(seconds: 30), // ✓ OPTIMIZADO: Reducido de 120s
+        sendTimeout: const Duration(seconds: 15),     // ✓ OPTIMIZADO: Agregado
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'User-Agent': 'MyPOSMobileBarcode/3.1.0', },
         responseType: ResponseType.plain,
-      ));
+      );
+
+      _dio = Dio(baseOptions);
+
+      // ✓✓✓ CRÍTICO: Logging para verificar que timeouts se aplican
+      debugPrint("[WooCommerceService] Timeouts configurados:");
+      debugPrint("  connectTimeout: ${_dio.options.connectTimeout}");
+      debugPrint("  receiveTimeout: ${_dio.options.receiveTimeout}");
+      debugPrint("  sendTimeout: ${_dio.options.sendTimeout}");
 
       _dio.interceptors.clear();
+
+      // ✓ OPTIMIZADO: Cache interceptor PRIMERO (máxima prioridad)
+      _dio.interceptors.add(DioCacheInterceptor(
+        options: ApiCacheManager.getCacheOptions(),
+      ));
+
+      // ✓ OPTIMIZADO: Retry interceptor SEGUNDO (después de cache, antes de auth)
+      _dio.interceptors.add(RetryInterceptor(
+        dio: _dio,
+        maxRetries: 3,
+        initialDelay: const Duration(seconds: 1),
+      ));
+
+      // Auth interceptor ÚLTIMO
       _dio.interceptors.add(_createAuthInterceptor());
 
       if (kDebugMode) {
@@ -231,13 +256,41 @@ class WooCommerceService {
 
       final data = _tryParseResponseData(response);
 
-      if (data is Map<String, dynamic> && data['access_token'] != null && data['refresh_token'] != null) {
-        await _storageService.saveAccessToken(data['access_token']);
-        await _storageService.saveRefreshToken(data['refresh_token']);
-        await initializeDioClient();
+      // ✓ DEBUG: Logging detallado para diagnosticar el formato de respuesta
+      debugPrint("[registerDeviceWithPlugin] Response status: ${response.statusCode}");
+      debugPrint("[registerDeviceWithPlugin] Response data type: ${data.runtimeType}");
+      debugPrint("[registerDeviceWithPlugin] Response data: $data");
+
+      // --- INICIO DE LA CORRECCIÓN ---
+      // Añade compatibilidad con la respuesta 'jwt' (antigua) y 'access_token' (nueva).
+      if (data is Map<String, dynamic>) {
+        String? accessToken = data['access_token']?.toString();
+        String? refreshToken = data['refresh_token']?.toString();
+
+        // Fallback: Si no se encuentran los tokens nuevos, buscar el token 'jwt' antiguo.
+        if (accessToken == null && data['jwt'] != null) {
+          accessToken = data['jwt']?.toString();
+          refreshToken = data['jwt']?.toString(); // Usar el mismo token para ambos
+          debugPrint("[registerDeviceWithPlugin] Fallback: Usando 'jwt' de una versión anterior del plugin.");
+        }
+
+        if (accessToken != null && accessToken.isNotEmpty && refreshToken != null && refreshToken.isNotEmpty) {
+          await _storageService.saveAccessToken(accessToken);
+          await _storageService.saveRefreshToken(refreshToken);
+          debugPrint("[registerDeviceWithPlugin] Tokens guardados exitosamente");
+          await initializeDioClient();
+        } else {
+          // El error ahora es más específico si falla la lógica de fallback
+          debugPrint("[registerDeviceWithPlugin] ERROR: No se encontraron 'access_token' ni 'jwt' en la respuesta.");
+          throw AuthenticationException("La respuesta de registro no contiene tokens válidos. Verifica que el plugin esté actualizado en WordPress (v3.0.1+).");
+        }
       } else {
-        throw AuthenticationException("La respuesta de registro no contiene tokens válidos.");
+        // Esto maneja el caso de que 'data' no sea un Map
+        debugPrint("[registerDeviceWithPlugin] ERROR: La respuesta del servidor no es un objeto JSON válido.");
+        throw AuthenticationException("La respuesta del servidor no fue un objeto JSON válido.");
       }
+      // --- FIN DE LA CORRECCIÓN ---
+
     } on DioException catch (e) {
       _handleDioError(e, "registrar dispositivo", throwException: true);
     }
@@ -305,7 +358,7 @@ class WooCommerceService {
         }
       } catch (parseError) {
         if (parseError is ApiException) {
-          if(throwException) throw parseError;
+          if(throwException) rethrow;
           errorMessage = parseError.message;
         }
         serverMsg = e.response?.data?.toString() ?? 'Error al parsear detalles del error';
@@ -487,19 +540,28 @@ class WooCommerceService {
     }
   }
 
-  Future<Map<String, dynamic>> getProductsBatch(List<int> ids) async {
+  /// ✓ FASE 2 BATCH API: Obtiene múltiples productos en una sola petición
+  /// Resuelve el problema N+1 al cargar pedidos con múltiples items
+  Future<Map<String, dynamic>> getProductsBatch(List<int> ids, {bool lightweight = false}) async {
     if (ids.isEmpty) return {};
     if (!await _connectivityService.checkConnectivity()) throw NetworkException("Sin conexión para obtener productos en lote.");
 
     final dio = await _getDioClient();
-    final endpoint = 'wp-json/mypos/v1/products/batch';
+    final endpoint = 'wp-json/mypos/v1/productos/batch';
 
     try {
-      final response = await dio.post(endpoint, data: {'ids': ids});
+      final response = await dio.post(
+        endpoint,
+        data: {
+          'ids': ids,
+          'lightweight': lightweight,
+        },
+      );
       final data = _tryParseResponseData(response);
 
-      if (data is Map<String, dynamic>) {
-        return data;
+      if (data is Map<String, dynamic> && data['products'] is Map) {
+        // El endpoint retorna: {products: {id: data}, count: N, requested: M, not_found: X}
+        return data['products'] as Map<String, dynamic>;
       }
       throw InvalidDataException("Respuesta inesperada para el lote de productos.");
     } on DioException catch (e) {
@@ -570,6 +632,76 @@ class WooCommerceService {
       await dio.post('wp-json/mypos/v1/actualizar-stock', data: {'updates': updates});
     } on DioException catch (e) {
       _handleDioError(e, "actualizar stock en lote (plugin)", throwException: true);
+    }
+  }
+
+  /// 🟢 PRIORIDAD 3: Obtener pedidos delta
+  /// Retorna pedidos nuevos/modificados desde un timestamp
+  Future<Map<String, dynamic>> getOrdersDelta({required int since}) async {
+    if (!await _connectivityService.checkConnectivity()) {
+      throw NetworkException("Sin conexión para obtener pedidos delta.");
+    }
+
+    if (connectionMode != 'plugin') {
+      throw ApiException("El endpoint delta solo está soportado en modo plugin.");
+    }
+
+    try {
+      final dio = await _getDioClient();
+      final response = await dio.get(
+        'wp-json/mypos/v1/orders/delta',
+        queryParameters: {'since': since},
+      );
+
+      final data = _tryParseResponseData(response);
+      if (data is Map<String, dynamic>) {
+        return data;
+      }
+
+      throw InvalidDataException("Respuesta inesperada del endpoint delta.");
+    } on DioException catch (e) {
+      _handleDioError(e, "obtener pedidos delta", throwException: true);
+      throw StateError("Unreachable");
+    }
+  }
+
+  /// 🟢 NUEVO: Obtener productos delta (cambios de inventario externos)
+  /// Retorna productos modificados fuera de la aplicación desde un timestamp
+  Future<Map<String, dynamic>> getProductsDelta({
+    required int since,
+    int? priority,
+    bool lightweight = false,
+  }) async {
+    if (!await _connectivityService.checkConnectivity()) {
+      throw NetworkException("Sin conexión para obtener productos delta.");
+    }
+
+    if (connectionMode != 'plugin') {
+      throw ApiException("El endpoint delta solo está soportado en modo plugin.");
+    }
+
+    try {
+      final dio = await _getDioClient();
+
+      final queryParams = <String, dynamic>{'since': since, 'lightweight': lightweight};
+      if (priority != null) {
+        queryParams['priority'] = priority;
+      }
+
+      final response = await dio.get(
+        'wp-json/mypos/v1/productos/delta',
+        queryParameters: queryParams,
+      );
+
+      final data = _tryParseResponseData(response);
+      if (data is Map<String, dynamic>) {
+        return data;
+      }
+
+      throw InvalidDataException("Respuesta inesperada del endpoint productos delta.");
+    } on DioException catch (e) {
+      _handleDioError(e, "obtener productos delta", throwException: true);
+      throw StateError("Unreachable");
     }
   }
 
@@ -796,6 +928,473 @@ class WooCommerceService {
       throw InvalidDataException("Respuesta inesperada al obtener categorías.");
     } on DioException catch (e) {
       _handleDioError(e, "obtener categorías de productos", throwException: true);
+      throw StateError("Unreachable");
+    }
+  }
+
+  /// ✓ FASE 2 STUB: Método stub para desactivar gestión de stock en variables
+  Future<Map<String, dynamic>> deactivateManageStockForAllVariables() async {
+    debugPrint("[WooCommerceService] deactivateManageStockForAllVariables - STUB not implemented");
+    // TODO: Implementar endpoint personalizado en el plugin de WordPress si es necesario
+    return {'message': 'Operación no implementada: deactivateManageStockForAllVariables'};
+  }
+
+  /// ✓ FASE 2 STUB: Método stub para activar gestión de stock en padres
+  Future<Map<String, dynamic>> activateManageStockForAllParents() async {
+    debugPrint("[WooCommerceService] activateManageStockForAllParents - STUB not implemented");
+    // TODO: Implementar endpoint personalizado en el plugin de WordPress si es necesario
+    return {'message': 'Operación no implementada: activateManageStockForAllParents'};
+  }
+
+  /// ✓ FASE 2 STUB: Método stub para desactivar gestión de stock en padres
+  Future<Map<String, dynamic>> deactivateManageStockForAllParents() async {
+    debugPrint("[WooCommerceService] deactivateManageStockForAllParents - STUB not implemented");
+    // TODO: Implementar endpoint personalizado en el plugin de WordPress si es necesario
+    return {'message': 'Operación no implementada: deactivateManageStockForAllParents'};
+  }
+
+  /// ✓ FASE 2 STUB: Método stub para obtener productos para sincronización de catálogo
+  Future<List<Map<String, dynamic>>> fetchProductsForCatalogSync({
+    required int page,
+    required int perPage,
+  }) async {
+    debugPrint("[WooCommerceService] fetchProductsForCatalogSync page=$page perPage=$perPage - STUB using standard endpoint");
+    // TODO: Si hay un endpoint optimizado en el plugin, usarlo aquí
+    // Por ahora, usar el endpoint estándar de WooCommerce
+    if (!await _connectivityService.checkConnectivity()) throw NetworkException("Sin conexión.");
+    final dio = await _getDioClient();
+    try {
+      final response = await dio.get(
+        'wp-json/wc/v3/products',
+        queryParameters: {
+          'page': page,
+          'per_page': perPage,
+          'status': 'publish',
+        },
+      );
+      final data = _tryParseResponseData(response);
+      if (data is List) {
+        return data.cast<Map<String, dynamic>>();
+      }
+      return [];
+    } on DioException catch (e) {
+      _handleDioError(e, "fetchProductsForCatalogSync", throwException: true);
+      throw StateError("Unreachable");
+    }
+  }
+
+  // ==================== ✅ NUEVO: DELTA SYNC METHODS ====================
+
+  /// Registrar dispositivo para push notifications
+  Future<void> registerDevice({
+    required String fcmToken,
+    required String deviceId,
+  }) async {
+    try {
+      final dio = await _getDioClient();
+      final response = await dio.post(
+        '/mypos/v1/device/register',
+        data: {
+          'fcm_token': fcmToken,
+          'device_id': deviceId,
+        },
+      );
+
+      debugPrint("[WooCommerceService] Device registered: ${response.data}");
+    } catch (e) {
+      debugPrint("[WooCommerceService] Failed to register device: $e");
+      rethrow;
+    }
+  }
+
+  /// Obtener productos modificados desde un timestamp (Delta Sync)
+  Future<Map<String, dynamic>> getDeltaProducts({
+    required int since,
+    int? priority,
+    bool lightweight = false,
+  }) async {
+    try {
+      final dio = await _getDioClient();
+
+      final queryParams = {
+        'since': since,
+        'lightweight': lightweight,
+      };
+
+      if (priority != null) {
+        queryParams['priority'] = priority;
+      }
+
+      final response = await dio.get(
+        '/mypos/v1/productos/delta',
+        queryParameters: queryParams,
+      );
+
+      return response.data as Map<String, dynamic>;
+    } catch (e) {
+      debugPrint("[WooCommerceService] Delta sync failed: $e");
+      rethrow;
+    }
+  }
+
+  // ==================== POLLING INTELIGENTE (Sin FCM) ====================
+
+  /// Check pedidos nuevos (ultra ligero: ~50 bytes)
+  Future<Map<String, dynamic>> checkNewOrders({
+    required String deviceId,
+    required int since,
+  }) async {
+    try {
+      final dio = await _getDioClient();
+      final response = await dio.get(
+        '/mypos/v1/check-new-orders',
+        queryParameters: {
+          'device_id': deviceId,
+          'since': since,
+        },
+      );
+
+      return response.data as Map<String, dynamic>;
+    } catch (e) {
+      debugPrint("[WooCommerceService] Check new orders failed: $e");
+      rethrow;
+    }
+  }
+
+  /// Check stock crítico (ligero: ~200 bytes)
+  Future<Map<String, dynamic>> checkCriticalStock({
+    required int since,
+  }) async {
+    try {
+      final dio = await _getDioClient();
+      final response = await dio.get(
+        '/mypos/v1/check-critical-stock',
+        queryParameters: {
+          'since': since,
+        },
+      );
+
+      return response.data as Map<String, dynamic>;
+    } catch (e) {
+      debugPrint("[WooCommerceService] Check critical stock failed: $e");
+      rethrow;
+    }
+  }
+
+  /// Enviar heartbeat del dispositivo
+  Future<void> sendDeviceHeartbeat({
+    required String deviceId,
+    String? deviceName,
+    String? platform,
+    String? appVersion,
+  }) async {
+    try {
+      final dio = await _getDioClient();
+      await dio.post(
+        '/mypos/v1/device/heartbeat',
+        data: {
+          'device_id': deviceId,
+          'device_name': deviceName,
+          'platform': platform,
+          'app_version': appVersion,
+        },
+      );
+
+      debugPrint("[WooCommerceService] Heartbeat sent successfully");
+    } catch (e) {
+      debugPrint("[WooCommerceService] Heartbeat failed: $e");
+      // No rethrow - heartbeat failure is non-critical
+    }
+  }
+
+  /// Obtener configuración de polling desde servidor
+  Future<Map<String, dynamic>> getPollingConfig() async {
+    try {
+      final dio = await _getDioClient();
+      final response = await dio.get('/mypos/v1/polling-config');
+
+      return response.data as Map<String, dynamic>;
+    } catch (e) {
+      debugPrint("[WooCommerceService] Get polling config failed: $e");
+      rethrow;
+    }
+  }
+
+  /// Marcar cambios como sincronizados
+  Future<void> markChangesSynced(List<int> productIds) async {
+    if (productIds.isEmpty) return;
+
+    try {
+      final dio = await _getDioClient();
+      await dio.post(
+        '/mypos/v1/mark-synced',
+        data: {
+          'product_ids': productIds,
+        },
+      );
+
+      debugPrint("[WooCommerceService] ${productIds.length} changes marked as synced");
+    } catch (e) {
+      debugPrint("[WooCommerceService] Mark synced failed: $e");
+      // No rethrow - marking as synced failure is non-critical
+    }
+  }
+
+  // ==================== V3.1.0: LONG POLLING ====================
+
+  /// Long Polling para notificaciones en tiempo real (30s wait)
+  Future<Map<String, dynamic>> longPollChanges({
+    required int lastId,
+    int timeout = 25,
+  }) async {
+    if (!await _connectivityService.checkConnectivity()) {
+      throw NetworkException("Sin conexión.");
+    }
+
+    try {
+      final dio = await _getDioClient();
+
+      // IMPORTANTE: Timeout debe ser mayor que el del servidor
+      final response = await dio.get(
+        'wp-json/mypos/v1/poll',
+        queryParameters: {
+          'last_id': lastId,
+          'timeout': timeout,
+        },
+        options: Options(
+          receiveTimeout: Duration(seconds: timeout + 10), // 35s
+          sendTimeout: const Duration(seconds: 5),
+        ),
+      );
+
+      final data = _tryParseResponseData(response);
+
+      if (data is Map<String, dynamic>) {
+        return data;
+      }
+
+      throw InvalidDataException("Respuesta inesperada del long polling.");
+    } on DioException catch (e) {
+      if (e.type == DioExceptionType.receiveTimeout) {
+        // Timeout normal, no es error
+        return {
+          'status': 'timeout',
+          'changes': [],
+          'last_id': lastId,
+        };
+      }
+
+      _handleDioError(e, "long polling", throwException: true);
+      throw StateError("Unreachable");
+    }
+  }
+
+  /// Confirmar recepción de cambios (ACK)
+  Future<void> acknowledgeChanges(int lastId) async {
+    if (!await _connectivityService.checkConnectivity()) return;
+
+    try {
+      final dio = await _getDioClient();
+
+      await dio.post(
+        'wp-json/mypos/v1/poll/ack',
+        data: {'last_id': lastId},
+      );
+
+      debugPrint("[WooCommerceService] Changes acknowledged: $lastId");
+    } catch (e) {
+      debugPrint("[WooCommerceService] ⚠️ ACK failed: $e");
+      // No lanzar error, es no-crítico
+    }
+  }
+
+  // ==================== V3.1.0: DELTA SYNC ====================
+
+  /// Obtener cambios delta desde timestamp
+  Future<Map<String, dynamic>> getDeltaChanges({
+    required int since,
+    String type = 'compact',
+    int limit = 100,
+  }) async {
+    if (!await _connectivityService.checkConnectivity()) {
+      throw NetworkException("Sin conexión.");
+    }
+
+    try {
+      final dio = await _getDioClient();
+
+      final response = await dio.get(
+        'wp-json/mypos/v1/sync/delta',
+        queryParameters: {
+          'since': since,
+          'type': type,
+          'limit': limit,
+        },
+      );
+
+      final data = _tryParseResponseData(response);
+
+      if (data is Map<String, dynamic>) {
+        return data;
+      }
+
+      throw InvalidDataException("Respuesta inesperada del delta sync.");
+    } on DioException catch (e) {
+      _handleDioError(e, "delta sync", throwException: true);
+      throw StateError("Unreachable");
+    }
+  }
+
+  /// Obtener productos en batch por IDs (v3.1.0)
+  Future<List<Map<String, dynamic>>> getProductsBatchV310(List<int> ids) async {
+    if (!await _connectivityService.checkConnectivity()) {
+      throw NetworkException("Sin conexión.");
+    }
+
+    if (ids.isEmpty) return [];
+
+    try {
+      final dio = await _getDioClient();
+
+      final response = await dio.post(
+        'wp-json/mypos/v1/sync/products/batch',
+        data: {'ids': ids},
+      );
+
+      final data = _tryParseResponseData(response);
+
+      if (data is Map<String, dynamic> && data['products'] is List) {
+        return (data['products'] as List).cast<Map<String, dynamic>>();
+      }
+
+      throw InvalidDataException("Respuesta inesperada del batch.");
+    } on DioException catch (e) {
+      _handleDioError(e, "products batch", throwException: true);
+      throw StateError("Unreachable");
+    }
+  }
+
+  /// Estadísticas de sincronización
+  Future<Map<String, dynamic>> getDeltaStats() async {
+    if (!await _connectivityService.checkConnectivity()) {
+      throw NetworkException("Sin conexión.");
+    }
+
+    try {
+      final dio = await _getDioClient();
+
+      final response = await dio.get('wp-json/mypos/v1/sync/stats');
+
+      final data = _tryParseResponseData(response);
+
+      if (data is Map<String, dynamic>) {
+        return data;
+      }
+
+      throw InvalidDataException("Respuesta inesperada de stats.");
+    } on DioException catch (e) {
+      _handleDioError(e, "delta stats", throwException: true);
+      throw StateError("Unreachable");
+    }
+  }
+
+  // ==================== V3.1.0: BATCH OPERATIONS ====================
+
+  /// Actualización masiva de stock (80% más rápido)
+  Future<Map<String, dynamic>> batchUpdateStock(
+    List<Map<String, dynamic>> items,
+  ) async {
+    if (!await _connectivityService.checkConnectivity()) {
+      throw NetworkException("Sin conexión.");
+    }
+
+    if (items.isEmpty) {
+      return {'success': true, 'updated': 0};
+    }
+
+    try {
+      final dio = await _getDioClient();
+
+      final response = await dio.post(
+        'wp-json/mypos/v1/batch/stock',
+        data: {'items': items},
+      );
+
+      final data = _tryParseResponseData(response);
+
+      if (data is Map<String, dynamic>) {
+        return data;
+      }
+
+      throw InvalidDataException("Respuesta inesperada del batch stock.");
+    } on DioException catch (e) {
+      _handleDioError(e, "batch stock update", throwException: true);
+      throw StateError("Unreachable");
+    }
+  }
+
+  /// Actualización masiva de precios
+  Future<Map<String, dynamic>> batchUpdatePrices(
+    List<Map<String, dynamic>> items,
+  ) async {
+    if (!await _connectivityService.checkConnectivity()) {
+      throw NetworkException("Sin conexión.");
+    }
+
+    if (items.isEmpty) {
+      return {'success': true, 'updated': 0};
+    }
+
+    try {
+      final dio = await _getDioClient();
+
+      final response = await dio.post(
+        'wp-json/mypos/v1/batch/prices',
+        data: {'items': items},
+      );
+
+      final data = _tryParseResponseData(response);
+
+      if (data is Map<String, dynamic>) {
+        return data;
+      }
+
+      throw InvalidDataException("Respuesta inesperada del batch prices.");
+    } on DioException catch (e) {
+      _handleDioError(e, "batch price update", throwException: true);
+      throw StateError("Unreachable");
+    }
+  }
+
+  /// Super Batch: Múltiples operaciones en una transacción
+  Future<Map<String, dynamic>> batchOperations(
+    List<Map<String, dynamic>> operations,
+  ) async {
+    if (!await _connectivityService.checkConnectivity()) {
+      throw NetworkException("Sin conexión.");
+    }
+
+    if (operations.isEmpty) {
+      return {'success': true, 'results': []};
+    }
+
+    try {
+      final dio = await _getDioClient();
+
+      final response = await dio.post(
+        'wp-json/mypos/v1/batch/v2',
+        data: {'operations': operations},
+      );
+
+      final data = _tryParseResponseData(response);
+
+      if (data is Map<String, dynamic>) {
+        return data;
+      }
+
+      throw InvalidDataException("Respuesta inesperada del super batch.");
+    } on DioException catch (e) {
+      _handleDioError(e, "batch operations", throwException: true);
       throw StateError("Unreachable");
     }
   }

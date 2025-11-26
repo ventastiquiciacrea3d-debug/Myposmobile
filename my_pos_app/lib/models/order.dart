@@ -1,7 +1,7 @@
 // lib/models/order.dart
 import 'package:hive/hive.dart';
 import 'package:flutter/foundation.dart'; // Para debugPrint
-import 'package:collection/collection.dart'; // Para firstWhereOrNull
+// Para firstWhereOrNull
 
 part 'order.g.dart';
 
@@ -75,7 +75,7 @@ class Order extends HiveObject {
     // Nombre del cliente
     String fn = json['billing']?['first_name']?.toString() ?? '';
     String ln = json['billing']?['last_name']?.toString() ?? '';
-    String name = '${fn} ${ln}'.trim();
+    String name = '$fn $ln'.trim();
     String customer = json['customerName'] ?? (name.isEmpty ? 'Cliente General' : name);
 
     // Fecha del pedido

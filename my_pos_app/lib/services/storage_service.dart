@@ -1,28 +1,32 @@
 // lib/services/storage_service.dart
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/foundation.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive_flutter/hive_flutter.dart' hide Box;
+import 'package:hive/hive.dart' as hive;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:collection/collection.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/product.dart';
-import '../models/order.dart';
-import '../models/label_print_item.dart';
+import '../models/order.dart' as model;
 import '../config/constants.dart';
 import '../models/sync_operation.dart';
 import '../locator.dart';
+import '../models/product_optimized.dart';
+import '../models/order_compact.dart';
+import '../services/database_service.dart';
+import '../services/product_converter_service.dart';
+import '../services/order_converter_service.dart';
+import '../objectbox.g.dart'; // Para query builders
 
 class StorageService {
-  Box<Product>? _productBox;
-  Box<Order>? _orderBox;
-  Box<List<String>>? _barcodeIndexBox;
-  Box? _settingsBox;
-  Box<Order>? _pendingOrderBox;
-  Box<LabelPrintItem>? _labelQueueBox;
-  Box<SyncOperation>? _syncQueueBox;
+  // ✅ HIVE - Solo para SyncQueue (Settings migrado a SharedPreferences)
+  hive.Box<SyncOperation>? _syncQueueBox;
+
+  // ✅ OBJECTBOX - Base de datos principal
+  DatabaseService? _db;
+  ProductConverterService? _converter;
+  OrderConverterService? _orderConverter;
 
   SharedPreferences get _prefs => getIt<SharedPreferences>();
 
@@ -32,20 +36,93 @@ class StorageService {
 
   StorageService();
 
-  Future<void> init() async {
-    debugPrint("[StorageService] init: Opening Hive boxes...");
+  // 📌 CORRECCIÓN CLAVE: Añadir isBackgroundService para evitar reabrir ObjectBox
+  Future<void> init({bool isBackgroundService = false}) async {
+    debugPrint("[StorageService] init: Initializing storage. Background Mode: $isBackgroundService");
     try {
-      _productBox = await Hive.openBox<Product>(hiveProductsBoxName);
-      _orderBox = await Hive.openBox<Order>(hiveOrdersBoxName);
-      _barcodeIndexBox = await Hive.openBox<List<String>>(hiveBarcodeIndexBoxName);
-      _settingsBox = await Hive.openBox(hiveSettingsBoxName);
-      _pendingOrderBox = await Hive.openBox<Order>(hivePendingOrdersBoxName);
-      _labelQueueBox = await Hive.openBox<LabelPrintItem>(hiveLabelQueueBoxName);
+      // ✅ OBJECTBOX - Base de datos principal (solo en el hilo principal)
+      if (!isBackgroundService) {
+        _db = await DatabaseService.getInstance();
+        _converter = ProductConverterService(_db!);
+        _orderConverter = OrderConverterService();
+      } else {
+        debugPrint("[StorageService] ⏭️ Skipping ObjectBox initialization in background isolate.");
+      }
+
+      // ✅ MIGRACIÓN UNA VEZ: Migrar datos de settingsBox a SharedPreferences si es necesario
+      await _migrateSettingsBoxToPrefs();
+
+      // ✅ HIVE - Solo para SyncQueue (Disponible en ambos isolates)
       _syncQueueBox = await Hive.openBox<SyncOperation>(hiveSyncQueueBoxName);
-      debugPrint("[StorageService] init: All Hive boxes initialized successfully.");
+
+      debugPrint("[StorageService] init: ✅ Initialization complete. DB (ObjectBox) status: ${isBackgroundService ? 'Skipped' : 'Initialized'}");
     } catch (e, stacktrace) {
       debugPrint("[StorageService] !! FATAL ERROR initializing storage: $e\n$stacktrace");
       rethrow;
+    }
+  }
+
+  /// ✅ MIGRACIÓN UNA VEZ: Migra datos de settingsBox (Hive) a SharedPreferences
+  /// Esta función abre temporalmente settingsBox, migra los datos, y la cierra.
+  /// Solo se ejecuta una vez (usa flag 'settings_box_migrated_v1').
+  Future<void> _migrateSettingsBoxToPrefs() async {
+    const migrationKey = 'settings_box_migrated_v1';
+
+    // Verificar si ya se migró
+    if (_prefs.getBool(migrationKey) == true) {
+      debugPrint("[StorageService] ⏭️ Settings migration already completed, skipping...");
+      return;
+    }
+
+    debugPrint("[StorageService] 🔄 Starting settings migration from Hive to SharedPreferences...");
+
+    hive.Box? tempBox;
+    try {
+      // Abrir temporalmente settingsBox solo para migración
+      tempBox = await Hive.openBox(hiveSettingsBoxName);
+
+      int migratedCount = 0;
+
+      // Migrar todos los timestamps (last_sync, ts_prod_*, ts_order_*, order_history_*)
+      for (final key in tempBox.keys) {
+        final value = tempBox.get(key);
+
+        // Solo migrar timestamps (String ISO 8601)
+        if (value is String && key.toString().startsWith('ts_')) {
+          final dt = DateTime.tryParse(value);
+          if (dt != null) {
+            await _prefs.setInt(key.toString(), dt.millisecondsSinceEpoch);
+            migratedCount++;
+          }
+        } else if (value is String && key == 'last_sync') {
+          final dt = DateTime.tryParse(value);
+          if (dt != null) {
+            await _prefs.setInt('last_sync_ms', dt.millisecondsSinceEpoch);
+            migratedCount++;
+          }
+        } else if (value is String && key.toString().startsWith('order_history_')) {
+          final dt = DateTime.tryParse(value);
+          if (dt != null) {
+            await _prefs.setInt(key.toString(), dt.millisecondsSinceEpoch);
+            migratedCount++;
+          }
+        }
+      }
+
+      // Cerrar la caja temporal después de migrar
+      await tempBox.close();
+
+      // Marcar migración como completada
+      await _prefs.setBool(migrationKey, true);
+
+      debugPrint("[StorageService] ✅ Settings migration completed: $migratedCount timestamps migrated");
+    } catch (e) {
+      debugPrint("[StorageService] ❌ Error during settings migration: $e");
+      // Asegurar que se cierra la caja en caso de error
+      if (tempBox?.isOpen == true) {
+        await tempBox?.close();
+      }
+      // No lanzar error - la app puede continuar sin migración
     }
   }
 
@@ -84,14 +161,14 @@ class StorageService {
 
   // --- El resto de métodos de la clase permanecen sin cambios ---
 
-  bool _isBoxReady<T>(Box<T>? box, String boxName) {
+  bool _isBoxReady<T>(hive.Box<T>? box, String boxName) {
     if (box == null || !box.isOpen) {
       debugPrint("[StorageService] Error: Box '$boxName' is not initialized or not open.");
       return false;
     }
     return true;
   }
-  bool _isGenericBoxReady(Box? box, String boxName) {
+  bool _isGenericBoxReady(hive.Box? box, String boxName) {
     if (box == null || !box.isOpen) {
       debugPrint("[StorageService] Error: Box '$boxName' is not initialized or not open.");
       return false;
@@ -123,177 +200,450 @@ class StorageService {
   Future<void> updateSyncOperation(SyncOperation operation) async {
     await addToSyncQueue(operation);
   }
+  /// ✅ SHAREDPREFERENCES: Last sync timestamp
   Future<void> setLastSync(DateTime dt) async {
-    final box = _settingsBox; if (!_isGenericBoxReady(box, hiveSettingsBoxName)) return;
-    try { await box!.put(hiveLastSyncKey, dt.toIso8601String()); } catch(e){debugPrint("Err setLastSync:$e");}
+    try {
+      await _prefs.setInt('last_sync_ms', dt.millisecondsSinceEpoch);
+    } catch(e) {
+      debugPrint("Err setLastSync:$e");
+    }
   }
+
   DateTime? getLastSync() {
-    final box = _settingsBox; if (!_isGenericBoxReady(box, hiveSettingsBoxName)) return null;
-    try { final s = box!.get(hiveLastSyncKey); return s != null ? DateTime.tryParse(s) : null; } catch(e){return null;}
-  }
-  Future<void> _updateSearchIndex(Product p) async {
-    final indexBox = _barcodeIndexBox;
-    if (!_isBoxReady(indexBox, hiveBarcodeIndexBoxName)) return;
-    final Set<String> keywords = {};
-    final String normalizedText = '${p.name} ${p.sku} ${p.barcode ?? ''}'.toLowerCase().replaceAll(RegExp(r'[^a-z0-9\s]'), '');
-    keywords.addAll(normalizedText.split(' ').where((s) => s.length > 1));
-    for (final keyword in keywords) {
-      final List<String> existingIds = indexBox!.get(keyword) ?? [];
-      if (!existingIds.contains(p.id)) {
-        existingIds.add(p.id);
-        await indexBox.put(keyword, existingIds);
-      }
+    try {
+      final ms = _prefs.getInt('last_sync_ms');
+      return ms != null ? DateTime.fromMillisecondsSinceEpoch(ms) : null;
+    } catch(e) {
+      return null;
     }
   }
+
+  // ❌ ELIMINADO: _updateSearchIndex() - Ya no se usa (búsqueda ahora usa ObjectBox queries directas)
+
   Future<void> cacheProduct(Product p, {List<Map<String, dynamic>>? fullAttributesWithOptions}) async {
-    final productBox = _productBox;
-    if (!_isBoxReady(productBox, hiveProductsBoxName)) return;
-    await productBox!.put(p.id, p.toHiveObject());
-    await setProductCacheTimestamp(p.id, DateTime.now());
-    await _updateSearchIndex(p);
-    final String attributesKey = 'product_faf_${p.id}';
-    if (fullAttributesWithOptions != null && fullAttributesWithOptions.isNotEmpty) {
-      await _settingsBox!.put(attributesKey, jsonEncode(fullAttributesWithOptions));
+    if (_db == null || _converter == null) {
+      debugPrint("[StorageService.cacheProduct] ❌ ERROR: ObjectBox not initialized");
+      throw Exception("ObjectBox not initialized - cannot cache product");
+    }
+
+    try {
+      // ✅ OBJECTBOX: Convertir y guardar en ProductOptimized
+      final optimized = _converter!.productToOptimized(p);
+      final box = _db!.store.box<ProductOptimized>();
+      box.put(optimized);
+
+      debugPrint("[StorageService.cacheProduct] ✅ Saved product ${p.id} to ObjectBox");
+    } catch (e) {
+      debugPrint("[StorageService.cacheProduct] ❌ Error saving to ObjectBox: $e");
+      rethrow;
     }
   }
+
+  /// ✓ FASE 2 BATCH API: Cachea múltiples productos en una sola operación
+  Future<void> cacheProductsBatch(List<Product> products, {Map<String, List<Map<String, dynamic>>>? fullAttributesMap}) async {
+    if (_db == null || _converter == null) {
+      debugPrint("[StorageService.cacheProductsBatch] ❌ ERROR: ObjectBox not initialized");
+      throw Exception("ObjectBox not initialized - cannot cache products batch");
+    }
+
+    if (products.isEmpty) return;
+
+    debugPrint("[StorageService.cacheProductsBatch] ✅ Caching ${products.length} products to ObjectBox");
+
+    try {
+      // ✅ OBJECTBOX: Convertir todos los productos a ProductOptimized
+      final List<ProductOptimized> optimizedProducts = products
+          .map((p) => _converter!.productToOptimized(p))
+          .toList();
+
+      // ✅ OBJECTBOX: UNA SOLA operación batch (100x más rápido que Hive)
+      final box = _db!.store.box<ProductOptimized>();
+      box.putMany(optimizedProducts);
+
+      debugPrint("[StorageService.cacheProductsBatch] ✅ Successfully cached ${products.length} products to ObjectBox");
+    } catch (e) {
+      debugPrint("[StorageService.cacheProductsBatch] ❌ Error saving to ObjectBox: $e");
+      rethrow;
+    }
+  }
+
+  /// ✅ OBJECTBOX ONLY: Obtiene producto por ID desde ObjectBox
   Product? getProductById(String pid, {bool rehydrateAttributes = true}) {
-    final productBox = _productBox;
-    if (!_isBoxReady(productBox, hiveProductsBoxName)) return null;
+    if (_db == null || _converter == null) {
+      debugPrint("[StorageService.getProductById] ❌ ERROR: ObjectBox not initialized");
+      return null;
+    }
+
     try {
-      Product? product = productBox!.get(pid);
-      if (product != null && rehydrateAttributes) {
-        final attributesJson = _settingsBox?.get('product_faf_${product.id}') as String?;
-        if (attributesJson != null && attributesJson.isNotEmpty) {
-          final List<Map<String, dynamic>> rehydrated = List<Map<String, dynamic>>.from(jsonDecode(attributesJson));
-          return product.copyWith(fullAttributesWithOptions: () => rehydrated);
-        }
+      final int productId = int.tryParse(pid) ?? 0;
+      if (productId == 0) return null;
+
+      // ✅ OBJECTBOX: Buscar en ProductOptimized
+      final box = _db!.store.box<ProductOptimized>();
+      final query = box.query(ProductOptimized_.id.equals(productId)).build();
+      final optimized = query.findFirst();
+      query.close();
+
+      if (optimized == null) {
+        debugPrint("[StorageService.getProductById] Producto $pid no encontrado en ObjectBox");
+        return null;
       }
-      return product;
-    } catch(e){ return null; }
+
+      // ✅ Convertir a Product (atributos ya incluidos desde ObjectBox)
+      return _converter!.optimizedToProduct(optimized);
+    } catch(e) {
+      debugPrint("[StorageService.getProductById] ❌ Error: $e");
+      return null;
+    }
   }
+
+  /// ✅ OBJECTBOX ONLY: Búsqueda de productos por nombre o SKU
   Future<List<Product>> searchLocalProductsByNameOrSku(String term) async {
-    final indexBox = _barcodeIndexBox;
-    if (!_isBoxReady(indexBox, hiveBarcodeIndexBoxName)) return [];
+    if (_db == null || _converter == null) {
+      debugPrint("[StorageService.searchLocalProductsByNameOrSku] ❌ ERROR: ObjectBox not initialized");
+      return [];
+    }
+
     if (term.trim().isEmpty) return [];
-    final keywords = term.toLowerCase().split(' ').where((s) => s.length > 1).toList();
-    if (keywords.isEmpty) return [];
-    Set<String>? matchingIds;
-    for (final keyword in keywords) {
-      final List<String> idsForKeyword = indexBox!.get(keyword) ?? [];
-      if (matchingIds == null) {
-        matchingIds = idsForKeyword.toSet();
-      } else {
-        matchingIds.retainAll(idsForKeyword);
-      }
-      if (matchingIds.isEmpty) break;
+
+    try {
+      final searchTerm = term.toLowerCase().trim();
+
+      // ✅ OBJECTBOX: Búsqueda por nombre o SKU
+      final box = _db!.store.box<ProductOptimized>();
+
+      // Query builder para buscar en nombre (contains) o SKU exacto
+      final queryBuilder = box.query(
+          ProductOptimized_.name.contains(searchTerm, caseSensitive: false)
+              .or(ProductOptimized_.sku.contains(searchTerm, caseSensitive: false))
+      );
+
+      final query = queryBuilder.build();
+      final results = query.find();
+      query.close();
+
+      // Convertir a Product
+      return results.map((opt) => _converter!.optimizedToProduct(opt)).toList();
+    } catch (e) {
+      debugPrint("[StorageService.searchLocalProductsByNameOrSku] ❌ Error: $e");
+      return [];
     }
-    if (matchingIds == null || matchingIds.isEmpty) return [];
-    final List<Product> results = [];
-    for (final id in matchingIds) {
-      final product = getProductById(id);
-      if (product != null) {
-        results.add(product);
-      }
-    }
-    return results;
   }
+
+  /// ✅ SHAREDPREFERENCES: Product cache timestamp
   Future<void> setProductCacheTimestamp(String productId, DateTime timestamp) async {
-    final box = _settingsBox; if (!_isGenericBoxReady(box, hiveSettingsBoxName)) return;
-    try { await box!.put('ts_prod_$productId', timestamp.toIso8601String()); } catch (e) { debugPrint("Err setProductCacheTimestamp: $e"); }
+    try {
+      await _prefs.setInt('ts_prod_$productId', timestamp.millisecondsSinceEpoch);
+    } catch (e) {
+      debugPrint("Err setProductCacheTimestamp: $e");
+    }
   }
+
   DateTime? getProductCacheTimestamp(String productId) {
-    final box = _settingsBox; if (!_isGenericBoxReady(box, hiveSettingsBoxName)) return null;
-    try { final ts = box!.get('ts_prod_$productId'); return (ts is String) ? DateTime.tryParse(ts) : null; } catch (e) { return null; }
+    try {
+      final ms = _prefs.getInt('ts_prod_$productId');
+      return ms != null ? DateTime.fromMillisecondsSinceEpoch(ms) : null;
+    } catch (e) {
+      return null;
+    }
   }
+  /// ✅ OBJECTBOX ONLY: Obtiene producto por código de barras
   Product? getCachedProductByBarcode(String bc) {
-    final box = _productBox; if (!_isBoxReady(box, hiveProductsBoxName)) return null;
+    if (_db == null || _converter == null) {
+      debugPrint("[StorageService.getCachedProductByBarcode] ❌ ERROR: ObjectBox not initialized");
+      return null;
+    }
+
     try {
-      final product = box!.values.firstWhereOrNull((p) => p.barcode == bc);
-      return product != null ? getProductById(product.id, rehydrateAttributes: true) : null;
-    } catch (e) { return null; }
+      // ✅ OBJECTBOX: Búsqueda indexada por barcode
+      final box = _db!.store.box<ProductOptimized>();
+      final query = box.query(ProductOptimized_.barcode.equals(bc)).build();
+      final optimized = query.findFirst();
+      query.close();
+
+      if (optimized == null) return null;
+      return _converter!.optimizedToProduct(optimized);
+    } catch (e) {
+      debugPrint("[StorageService.getCachedProductByBarcode] ❌ Error: $e");
+      return null;
+    }
   }
+
+  /// ✅ OBJECTBOX ONLY: Obtiene producto por SKU
   Product? getProductBySku(String sku) {
-    final box = _productBox; if (!_isBoxReady(box, hiveProductsBoxName)) return null;
+    if (_db == null || _converter == null) {
+      debugPrint("[StorageService.getProductBySku] ❌ ERROR: ObjectBox not initialized");
+      return null;
+    }
+
     if (sku.trim().isEmpty) return null;
+
     try {
-      final product = box!.values.firstWhereOrNull((p) => p.sku.toLowerCase() == sku.trim().toLowerCase());
-      return product != null ? getProductById(product.id, rehydrateAttributes: true) : null;
-    } catch (e) { return null; }
+      // ✅ OBJECTBOX: Búsqueda indexada por SKU
+      final box = _db!.store.box<ProductOptimized>();
+      final query = box.query(ProductOptimized_.sku.equals(sku.trim())).build();
+      final optimized = query.findFirst();
+      query.close();
+
+      if (optimized == null) return null;
+      return _converter!.optimizedToProduct(optimized);
+    } catch (e) {
+      debugPrint("[StorageService.getProductBySku] ❌ Error: $e");
+      return null;
+    }
   }
-  Future<void> savePendingOrder(Order order, String localId) async {
-    final box = _pendingOrderBox; if (!_isBoxReady(box, hivePendingOrdersBoxName)) return;
+
+  Future<void> savePendingOrder(model.Order order, String localId) async {
+    if (_db == null || _orderConverter == null) {
+      debugPrint("[StorageService.savePendingOrder] ❌ ERROR: ObjectBox not initialized");
+      throw Exception("ObjectBox not initialized - cannot save pending order");
+    }
+
     try {
-      await box!.put(localId, order.id == localId ? order : order.copyWith(id: localId));
-    } catch (e) { debugPrint("ERROR saving pending order $localId: $e"); }
+      // ✅ OBJECTBOX: Convertir y guardar
+      final orderToSave = order.id == localId ? order : order.copyWith(id: localId);
+      final compact = _orderConverter!.orderToCompact(orderToSave);
+
+      final box = _db!.store.box<OrderCompact>();
+      box.put(compact);
+
+      debugPrint("[StorageService.savePendingOrder] ✅ Saved pending order $localId to ObjectBox");
+    } catch (e) {
+      debugPrint("[StorageService.savePendingOrder] ❌ Error saving to ObjectBox: $e");
+      rethrow;
+    }
   }
-  Map<String, Order> getPendingOrders() {
-    final box = _pendingOrderBox; if (!_isBoxReady(box, hivePendingOrdersBoxName)) return {};
+  /// ✅ OBJECTBOX ONLY: Obtiene órdenes pendientes
+  Map<String, model.Order> getPendingOrders() {
+    if (_db == null || _orderConverter == null) {
+      debugPrint("[StorageService.getPendingOrders] ❌ ERROR: ObjectBox not initialized");
+      return {};
+    }
+
     try {
-      return box!.toMap().map((key, value) => MapEntry(key.toString(), value));
-    } catch (e) { return {}; }
+      // ✅ OBJECTBOX: Obtener todas las órdenes NO sincronizadas
+      final box = _db!.store.box<OrderCompact>();
+
+      // Query para órdenes pendientes (isSynced = false)
+      final query = box.query(OrderCompact_.flags.equals(0)).build(); // flags = 0 significa no synced
+      final compactOrders = query.find();
+      query.close();
+
+      // Convertir a Map<String, model.Order>
+      final Map<String, model.Order> result = {};
+      for (final compact in compactOrders) {
+        final order = _orderConverter!.compactToOrder(compact);
+        result[compact.localOrderId] = order;
+      }
+
+      return result;
+    } catch (e) {
+      debugPrint("[StorageService.getPendingOrders] ❌ Error: $e");
+      return {};
+    }
   }
+
+  /// ✅ OBJECTBOX ONLY: Elimina orden pendiente
   Future<void> removePendingOrder(String localId) async {
-    final box = _pendingOrderBox; if (!_isBoxReady(box, hivePendingOrdersBoxName)) return;
+    if (_db == null || _orderConverter == null) {
+      debugPrint("[StorageService.removePendingOrder] ❌ ERROR: ObjectBox not initialized");
+      return;
+    }
+
     try {
-      await box!.delete(localId);
-    } catch (e) { debugPrint("ERROR removing pending order $localId: $e"); }
+      // ✅ OBJECTBOX: Buscar y eliminar orden por localOrderId
+      final box = _db!.store.box<OrderCompact>();
+      final query = box.query(OrderCompact_.localOrderId.equals(localId)).build();
+      final compact = query.findFirst();
+      query.close();
+
+      if (compact != null) {
+        box.remove(compact.localId);
+        debugPrint("[StorageService.removePendingOrder] ✅ Removed order $localId from ObjectBox");
+      }
+    } catch (e) {
+      debugPrint("[StorageService.removePendingOrder] ❌ Error: $e");
+    }
   }
-  Order? getPendingOrderById(String localId) {
-    final box = _pendingOrderBox; if (!_isBoxReady(box, hivePendingOrdersBoxName)) return null;
-    try { return box!.get(localId); } catch (e) { return null; }
+
+  /// ✅ OBJECTBOX ONLY: Obtiene orden pendiente por ID
+  model.Order? getPendingOrderById(String localId) {
+    if (_db == null || _orderConverter == null) {
+      debugPrint("[StorageService.getPendingOrderById] ❌ ERROR: ObjectBox not initialized");
+      return null;
+    }
+
+    try {
+      // ✅ OBJECTBOX: Buscar por localOrderId indexado
+      final box = _db!.store.box<OrderCompact>();
+      final query = box.query(OrderCompact_.localOrderId.equals(localId)).build();
+      final compact = query.findFirst();
+      query.close();
+
+      if (compact == null) return null;
+      return _orderConverter!.compactToOrder(compact);
+    } catch (e) {
+      debugPrint("[StorageService.getPendingOrderById] ❌ Error: $e");
+      return null;
+    }
   }
-  Future<void> saveCompletedOrder(Order order) async {
-    final box = _orderBox; if (!_isBoxReady(box, hiveOrdersBoxName)) return;
+
+  Future<void> saveCompletedOrder(model.Order order) async {
+    if (_db == null || _orderConverter == null) {
+      debugPrint("[StorageService.saveCompletedOrder] ❌ ERROR: ObjectBox not initialized");
+      throw Exception("ObjectBox not initialized - cannot save completed order");
+    }
+
     if (order.id != null && !order.id!.startsWith('local_')) {
       try {
-        await box!.put(order.id, order);
-        await setOrderCacheTimestamp(order.id!, DateTime.now());
-      } catch (e) { debugPrint("ERROR saving completed order ${order.id}: $e"); }
+        // ✅ OBJECTBOX: Convertir y guardar orden completada (ya sincronizada)
+        final compact = _orderConverter!.orderToCompact(order);
+        final box = _db!.store.box<OrderCompact>();
+        box.put(compact);
+
+        debugPrint("[StorageService.saveCompletedOrder] ✅ Saved completed order ${order.id} to ObjectBox");
+      } catch (e) {
+        debugPrint("[StorageService.saveCompletedOrder] ❌ Error saving to ObjectBox: $e");
+        rethrow;
+      }
     }
   }
-  Order? getCompletedOrderById(String orderId) {
-    final box = _orderBox; if (!_isBoxReady(box, hiveOrdersBoxName)) return null;
-    try { return box!.get(orderId); } catch (e) { return null; }
+
+  /// ✅ OBJECTBOX ONLY: Obtiene orden completada por ID
+  model.Order? getCompletedOrderById(String orderId) {
+    if (_db == null || _orderConverter == null) {
+      debugPrint("[StorageService.getCompletedOrderById] ❌ ERROR: ObjectBox not initialized");
+      return null;
+    }
+
+    try {
+      // ✅ OBJECTBOX: Buscar por orderId indexado
+      final int? orderIdInt = int.tryParse(orderId);
+      if (orderIdInt == null) return null;
+
+      final box = _db!.store.box<OrderCompact>();
+      final query = box.query(OrderCompact_.orderId.equals(orderIdInt)).build();
+      final compact = query.findFirst();
+      query.close();
+
+      if (compact == null) return null;
+      return _orderConverter!.compactToOrder(compact);
+    } catch (e) {
+      debugPrint("[StorageService.getCompletedOrderById] ❌ Error: $e");
+      return null;
+    }
   }
+
+  /// ✅ SHAREDPREFERENCES: Order cache timestamp
   Future<void> setOrderCacheTimestamp(String orderIdOrKey, DateTime timestamp) async {
-    final box = _settingsBox; if (!_isGenericBoxReady(box, hiveSettingsBoxName)) return;
-    final key = orderIdOrKey.startsWith('order_history_') ? orderIdOrKey : 'ts_order_$orderIdOrKey';
-    try { await box!.put(key, timestamp.toIso8601String()); } catch (e) { debugPrint("Err setOrderCacheTimestamp: $e"); }
+    try {
+      final key = orderIdOrKey.startsWith('order_history_') ? orderIdOrKey : 'ts_order_$orderIdOrKey';
+      await _prefs.setInt(key, timestamp.millisecondsSinceEpoch);
+    } catch (e) {
+      debugPrint("Err setOrderCacheTimestamp: $e");
+    }
   }
+
   DateTime? getOrderCacheTimestamp(String orderIdOrKey) {
-    final box = _settingsBox; if (!_isGenericBoxReady(box, hiveSettingsBoxName)) return null;
-    final key = orderIdOrKey.startsWith('order_history_') ? orderIdOrKey : 'ts_order_$orderIdOrKey';
-    try { final ts = box!.get(key); return (ts is String) ? DateTime.tryParse(ts) : null; } catch (e) { return null; }
-  }
-  List<Order> getCompletedOrders({int limit = 20}) {
-    final box = _orderBox; if (!_isBoxReady(box, hiveOrdersBoxName)) return [];
     try {
-      var orders = box!.values.toList();
-      orders.sort((a, b) => b.date.compareTo(a.date));
-      return orders.take(limit).toList();
-    } catch (e) { return []; }
+      final key = orderIdOrKey.startsWith('order_history_') ? orderIdOrKey : 'ts_order_$orderIdOrKey';
+      final ms = _prefs.getInt(key);
+      return ms != null ? DateTime.fromMillisecondsSinceEpoch(ms) : null;
+    } catch (e) {
+      return null;
+    }
   }
+  /// ✅ OBJECTBOX ONLY: Obtiene órdenes completadas
+  List<model.Order> getCompletedOrders({int limit = 20}) {
+    if (_db == null || _orderConverter == null) {
+      debugPrint("[StorageService.getCompletedOrders] ❌ ERROR: ObjectBox not initialized");
+      return [];
+    }
+
+    try {
+      // ✅ OBJECTBOX: Obtener órdenes sincronizadas ordenadas por fecha descendente
+      final box = _db!.store.box<OrderCompact>();
+
+      // Query para órdenes completadas (isSynced = true) ordenadas por fecha
+      final query = box.query(OrderCompact_.flags.greaterThan(0))
+          .order(OrderCompact_.date, flags: 1) // 1 = descending
+          .build();
+
+      query.limit = limit;
+      final compactOrders = query.find();
+      query.close();
+
+      // Convertir a Order
+      return compactOrders.map((compact) => _orderConverter!.compactToOrder(compact)).toList();
+    } catch (e) {
+      debugPrint("[StorageService.getCompletedOrders] ❌ Error: $e");
+      return [];
+    }
+  }
+
+  /// ✅ OBJECTBOX ONLY: Limpia todas las órdenes completadas del cache
   Future<void> clearCompletedOrdersCache() async {
-    final orderBox = _orderBox;
-    final settingsBox = _settingsBox;
-    if (!_isBoxReady(orderBox, hiveOrdersBoxName) || !_isGenericBoxReady(settingsBox, hiveSettingsBoxName)) return;
+    if (_db == null || _orderConverter == null) {
+      debugPrint("[StorageService.clearCompletedOrdersCache] ❌ ERROR: ObjectBox not initialized");
+      return;
+    }
+
     try {
-      List<String> keysToRemove = settingsBox!.keys.whereType<String>().where((k) => k.startsWith('ts_order_') || k.startsWith('order_history_')).toList();
-      if (keysToRemove.isNotEmpty) await settingsBox.deleteAll(keysToRemove);
-      await orderBox!.clear();
-    } catch(e) { throw Exception("Error clearing completed orders cache: $e"); }
+      final box = _db!.store.box<OrderCompact>();
+
+      // Query para órdenes sincronizadas (flags > 0)
+      final query = box.query(OrderCompact_.flags.greaterThan(0)).build();
+      final orderIds = query.findIds();
+      query.close();
+
+      if (orderIds.isNotEmpty) {
+        box.removeMany(orderIds);
+        debugPrint("[StorageService.clearCompletedOrdersCache] ✅ Cleared ${orderIds.length} completed orders from ObjectBox");
+      } else {
+        debugPrint("[StorageService.clearCompletedOrdersCache] No completed orders to clear");
+      }
+    } catch (e) {
+      debugPrint("[StorageService.clearCompletedOrdersCache] ❌ Error: $e");
+    }
   }
+
+  /// ✅ OBJECTBOX ONLY: Obtiene variaciones de un producto
   Future<List<Product>> getLocalVariationsForProduct(String productId) async {
-    final box = _productBox; if (!_isBoxReady(box, hiveProductsBoxName)) return [];
+    if (_db == null || _converter == null) {
+      debugPrint("[StorageService.getLocalVariationsForProduct] ❌ ERROR: ObjectBox not initialized");
+      return [];
+    }
+
     final parentIdInt = int.tryParse(productId);
     if (parentIdInt == null) return [];
+
     try {
-      final List<Product> baseVariations = box!.values.where((p) => p.isVariation && p.parentId == parentIdInt).toList();
-      return baseVariations.map((p) => getProductById(p.id) ?? p).toList();
-    } catch (e) { return []; }
+      // ✅ OBJECTBOX: Query indexado por parentId
+      final box = _db!.store.box<ProductOptimized>();
+
+      // Buscar todos los productos con este parentId
+      final query = box.query(ProductOptimized_.parentId.equals(parentIdInt)).build();
+      final variations = query.find();
+      query.close();
+
+      // Convertir a Product
+      return variations.map((opt) => _converter!.optimizedToProduct(opt)).toList();
+    } catch (e) {
+      debugPrint("[StorageService.getLocalVariationsForProduct] ❌ Error: $e");
+      return [];
+    }
+  }
+
+  /// ❌ DEPRECADO: cleanupLegacyAttributeKeys no longer needed
+  /// SettingsBox ha sido migrado a SharedPreferences, no hay claves legacy que limpiar
+  Future<int> cleanupLegacyAttributeKeys() async {
+    debugPrint('[StorageService.cleanupLegacyAttributeKeys] ⏭️ Method deprecated - settingsBox migrated to SharedPreferences');
+    return 0;
   }
 
   void dispose() {
+    // Si el servicio de ObjectBox se usó en el hilo principal, debe cerrarse al final del ciclo de vida.
+    // Asumimos que DatabaseService.dispose() maneja el cierre de ObjectBox.
     debugPrint("[StorageService] Dispose called.");
   }
 }

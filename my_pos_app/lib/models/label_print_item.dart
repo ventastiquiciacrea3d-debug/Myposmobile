@@ -1,5 +1,4 @@
 // lib/models/label_print_item.dart
-import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
 import 'package:uuid/uuid.dart';
@@ -106,6 +105,10 @@ class LabelPrintItem extends HiveObject {
   @HiveField(5) final String? barcode;
   @HiveField(6) final String? lotNumber;
 
+  // ⚡ NUEVOS CAMPOS: Almacenar nombre y SKU en caché para carga rápida
+  final String? cachedProductName;
+  final String? cachedSku;
+
   app_product.Product? product;
   app_product.Product? resolvedVariant;
 
@@ -117,14 +120,17 @@ class LabelPrintItem extends HiveObject {
     this.selectedVariants = const {},
     this.barcode,
     this.lotNumber,
+    this.cachedProductName,
+    this.cachedSku,
     this.product,
     this.resolvedVariant,
   }) {
     id ??= const Uuid().v4();
   }
 
-  String get displayName => resolvedVariant?.name ?? product?.name ?? 'Cargando...';
-  String get displaySku => resolvedVariant?.sku ?? product?.sku ?? 'N/A';
+  /// ⚡ OPTIMIZACIÓN: Usar valores en caché primero, luego productos completos si están cargados
+  String get displayName => cachedProductName ?? resolvedVariant?.name ?? product?.name ?? 'Producto';
+  String get displaySku => cachedSku ?? resolvedVariant?.sku ?? product?.sku ?? 'N/A';
 
   SerializableLabelData toSerializableData() {
     // --- INICIO DE LA CORRECCIÓN ---

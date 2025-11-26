@@ -19,13 +19,19 @@ class SyncOperationAdapter extends TypeAdapter<SyncOperation> {
     return SyncOperation(
       type: fields[1] as SyncOperationType,
       data: (fields[2] as Map).cast<String, dynamic>(),
-    )..retryCount = fields[4] as int;
+      priority: fields[5] as int?,
+      idempotencyKey: fields[7] as String?,
+    )
+      ..retryCount = fields[4] as int
+      ..nextRetryAfter = fields[6] as DateTime?
+      ..status = fields[8] as SyncOperationStatus
+      ..lastAttemptAt = fields[9] as DateTime?;
   }
 
   @override
   void write(BinaryWriter writer, SyncOperation obj) {
     writer
-      ..writeByte(5)
+      ..writeByte(10)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -35,7 +41,17 @@ class SyncOperationAdapter extends TypeAdapter<SyncOperation> {
       ..writeByte(3)
       ..write(obj.timestamp)
       ..writeByte(4)
-      ..write(obj.retryCount);
+      ..write(obj.retryCount)
+      ..writeByte(5)
+      ..write(obj.priority)
+      ..writeByte(6)
+      ..write(obj.nextRetryAfter)
+      ..writeByte(7)
+      ..write(obj.idempotencyKey)
+      ..writeByte(8)
+      ..write(obj.status)
+      ..writeByte(9)
+      ..write(obj.lastAttemptAt);
   }
 
   @override
@@ -89,6 +105,55 @@ class SyncOperationTypeAdapter extends TypeAdapter<SyncOperationType> {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is SyncOperationTypeAdapter &&
+          runtimeType == other.runtimeType &&
+          typeId == other.typeId;
+}
+
+class SyncOperationStatusAdapter extends TypeAdapter<SyncOperationStatus> {
+  @override
+  final int typeId = 11;
+
+  @override
+  SyncOperationStatus read(BinaryReader reader) {
+    switch (reader.readByte()) {
+      case 0:
+        return SyncOperationStatus.pending;
+      case 1:
+        return SyncOperationStatus.retrying;
+      case 2:
+        return SyncOperationStatus.failed;
+      case 3:
+        return SyncOperationStatus.blocked;
+      default:
+        return SyncOperationStatus.pending;
+    }
+  }
+
+  @override
+  void write(BinaryWriter writer, SyncOperationStatus obj) {
+    switch (obj) {
+      case SyncOperationStatus.pending:
+        writer.writeByte(0);
+        break;
+      case SyncOperationStatus.retrying:
+        writer.writeByte(1);
+        break;
+      case SyncOperationStatus.failed:
+        writer.writeByte(2);
+        break;
+      case SyncOperationStatus.blocked:
+        writer.writeByte(3);
+        break;
+    }
+  }
+
+  @override
+  int get hashCode => typeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SyncOperationStatusAdapter &&
           runtimeType == other.runtimeType &&
           typeId == other.typeId;
 }

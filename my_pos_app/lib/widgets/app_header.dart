@@ -1,10 +1,10 @@
 // lib/widgets/app_header.dart
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import '../providers/order_provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../providers/order_notifier.dart';
 import '../config/routes.dart';
 
-class AppHeader extends StatelessWidget implements PreferredSizeWidget {
+class AppHeader extends ConsumerWidget implements PreferredSizeWidget {
   final String title;
   final bool showSearchButton;
   final bool showSettingsButton;
@@ -16,7 +16,7 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
   final PreferredSizeWidget? bottom;
 
   const AppHeader({
-    Key? key,
+    super.key,
     required this.title,
     this.showSearchButton = false,
     this.showSettingsButton = true,
@@ -26,10 +26,10 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
     this.onBackPressed,
     this.showBackButton = false,
     this.bottom,
-  }) : super(key: key);
+  });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return AppBar(
       // --- INICIO DE LA CORRECCIÓN ---
       automaticallyImplyLeading: false, // Evita que Flutter añada un botón de retroceso automáticamente
@@ -51,9 +51,15 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
             onPressed: () { /* Lógica de búsqueda */ },
           ),
         if (showCartButton)
-          Selector<OrderProvider, int>(
-            selector: (_, provider) => provider.currentOrder?.items.length ?? 0,
-            builder: (context, itemCount, child) {
+          Consumer(
+            builder: (context, ref, child) {
+              final orderState = ref.watch(currentOrderProvider);
+              final itemCount = orderState.when(
+                data: (state) => state.order?.items.length ?? 0,
+                loading: () => 0,
+                error: (_, __) => 0,
+              );
+
               return IconButton(
                 icon: Badge(
                   label: Text(itemCount.toString()),

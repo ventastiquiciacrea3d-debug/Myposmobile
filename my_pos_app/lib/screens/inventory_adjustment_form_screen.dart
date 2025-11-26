@@ -1,7 +1,7 @@
 // lib/screens/inventory_adjustment_form_screen.dart
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -12,9 +12,9 @@ import 'package:collection/collection.dart';
 import '../models/product.dart' as app_product;
 import '../models/inventory_movement.dart';
 import '../models/label_print_item.dart';
-import '../providers/inventory_provider.dart';
-import '../providers/label_provider.dart';
-import '../providers/app_state_provider.dart';
+import '../providers/inventory_notifier.dart';
+import '../providers/label_notifier.dart';
+import '../providers/app_state_notifier.dart';
 import '../repositories/product_repository.dart';
 import '../locator.dart';
 import '../widgets/app_header.dart';
@@ -34,18 +34,19 @@ class InventoryAdjustmentFormScreenArguments {
   });
 }
 
-class InventoryAdjustmentFormScreen extends StatefulWidget {
+/// ✓ FASE 2 RIVERPOD: Migrado a ConsumerStatefulWidget
+class InventoryAdjustmentFormScreen extends ConsumerStatefulWidget {
   final InventoryAdjustmentFormScreenArguments? arguments;
 
-  const InventoryAdjustmentFormScreen({Key? key, this.arguments}) : super(key: key);
+  const InventoryAdjustmentFormScreen({super.key, this.arguments});
 
   @override
-  State<InventoryAdjustmentFormScreen> createState() =>
+  ConsumerState<InventoryAdjustmentFormScreen> createState() =>
       _InventoryAdjustmentFormScreenState();
 }
 
 class _InventoryAdjustmentFormScreenState
-    extends State<InventoryAdjustmentFormScreen> {
+    extends ConsumerState<InventoryAdjustmentFormScreen> {
   final _formKey = GlobalKey<FormState>();
 
   final TextEditingController _productSearchInputController = TextEditingController();
@@ -59,7 +60,7 @@ class _InventoryAdjustmentFormScreenState
 
   app_product.Product? _currentFoundProduct;
   app_product.Product? _currentResolvedVariant;
-  Map<String, String?> _currentSelectedAttributes = {};
+  final Map<String, String?> _currentSelectedAttributes = {};
   List<Map<String, dynamic>> _configurableAttributesUI = [];
   List<app_product.Product> _availableVariations = [];
   bool _isLoadingProductDetails = false;
@@ -138,7 +139,7 @@ class _InventoryAdjustmentFormScreenState
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        context.read<InventoryProvider>().loadCachedAdjustment().then((cachedData) {
+        ref.read(inventoryProvider.notifier).loadCachedAdjustment().then((cachedData) {
           if (mounted && cachedData != null) {
             _showResumeFromCacheDialog(cachedData.description, cachedData.items);
           }
@@ -233,7 +234,7 @@ class _InventoryAdjustmentFormScreenState
     _cacheSaveDebounce?.cancel();
     _cacheSaveDebounce = Timer(const Duration(seconds: 2), () {
       if (mounted && _massAdjustmentBatch.isNotEmpty) {
-        context.read<InventoryProvider>().cacheAdjustment(
+        ref.read(inventoryProvider.notifier).cacheAdjustment(
           _overallMovementDescriptionController.text,
           _massAdjustmentBatch,
         );
@@ -251,7 +252,7 @@ class _InventoryAdjustmentFormScreenState
           TextButton(
             child: const Text("Descartar"),
             onPressed: () {
-              context.read<InventoryProvider>().clearCachedAdjustment();
+              ref.read(inventoryProvider.notifier).clearCachedAdjustment();
               Navigator.pop(dialogContext);
             },
           ),
@@ -305,8 +306,8 @@ class _InventoryAdjustmentFormScreenState
       _searchErrorNotifier.value = null;
     }
 
-    final appState = context.read<AppStateProvider>();
-    if (appState.connectionStatus == ConnectionStatus.offline) {
+    final appState = ref.read(appStateNotifierProvider);
+    if (!appState.isOnline) {
       final errorMsg = "Sin conexión para buscar producto.";
       if (isDirectCodeSearch) {
         if(mounted) setState(() { _currentProductError = errorMsg; _isLoadingProductDetails = false; });
@@ -324,10 +325,12 @@ class _InventoryAdjustmentFormScreenState
         if (product != null) {
           await _processFoundProductDetails(product, fromScanOrDirectCode: true);
         } else {
-          if (mounted) setState(() {
+          if (mounted) {
+            setState(() {
             _currentProductError = "Producto no encontrado con código: $term";
             _isLoadingProductDetails = false;
           });
+          }
         }
       } else {
         if (term.length < 2) {
@@ -454,7 +457,11 @@ class _InventoryAdjustmentFormScreenState
           _currentQuantity = 1;
         }
       } else {
-        if (_isStockTakeMode) _newTotalStock = 0; else _currentQuantity = 1;
+        if (_isStockTakeMode) {
+          _newTotalStock = 0;
+        } else {
+          _currentQuantity = 1;
+        }
         _currentProductError = _currentProductError ?? "No se pudo determinar el producto para el stock.";
       }
       _isLoadingProductDetails = false;
@@ -792,7 +799,7 @@ class _InventoryAdjustmentFormScreenState
         return;
       }
       if (!_isCurrentItemEntry && _currentQuantity > stockBeforeValue ) {
-        if(mounted) setState(() => _currentProductError = "La cantidad de salida (${_currentQuantity}) excede el stock actual ($stockBeforeValue).");
+        if(mounted) setState(() => _currentProductError = "La cantidad de salida ($_currentQuantity) excede el stock actual ($stockBeforeValue).");
         return;
       }
       quantityChangedValue = _isCurrentItemEntry ? _currentQuantity : -_currentQuantity;
@@ -925,17 +932,17 @@ class _InventoryAdjustmentFormScreenState
 
     showDialog(context: context, barrierDismissible: false, builder: (BuildContext dialogContext) => const AlertDialog(shape: RoundedRectangleBorder(borderRadius: BorderRadius.all(Radius.circular(16.0))), content: Row(children: [CircularProgressIndicator(), SizedBox(width: 24), Text("Guardando ajuste...")])));
 
-    final inventoryProvider = context.read<InventoryProvider>();
+    final inventoryNotifier = ref.read(inventoryProvider.notifier);
     final descriptionText = _overallMovementDescriptionController.text.trim().isEmpty
         ? _overallMovementType.displayName
         : _overallMovementDescriptionController.text.trim();
 
-    bool success = await inventoryProvider.performMassInventoryAdjustment(
+    bool success = await inventoryNotifier.performMassInventoryAdjustment(
       type: _overallMovementType, description: descriptionText, itemsToAdjust: List.from(_massAdjustmentBatch),
     );
 
     if (mounted) {
-      await inventoryProvider.clearCachedAdjustment();
+      await inventoryNotifier.clearCachedAdjustment();
       if (Navigator.of(context, rootNavigator: true).canPop()) {
         Navigator.of(context, rootNavigator: true).pop();
       }
@@ -952,13 +959,14 @@ class _InventoryAdjustmentFormScreenState
         Navigator.pop(context, true);
       }
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(inventoryProvider.errorMessage ?? 'Error al guardar el ajuste.'), backgroundColor: Colors.red.shade700, duration: const Duration(seconds: 4),));
+      final inventoryState = ref.read(inventoryProvider);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(inventoryState.errorMessage ?? 'Error al guardar el ajuste.'), backgroundColor: Colors.red.shade700, duration: const Duration(seconds: 4),));
     }
   }
 
   Future<void> _prepareAndNavigateToLabels() async {
     if (!mounted) return;
-    final labelProvider = context.read<LabelProvider>();
+    final labelNotifier = ref.read(labelProvider.notifier);
     final productRepo = getIt<ProductRepository>();
 
     showDialog(
@@ -974,13 +982,14 @@ class _InventoryAdjustmentFormScreenState
       for (final item in itemsForLabels) {
         app_product.Product? productDetails;
         app_product.Product? parentDetails;
+        // 📌 OPTIMIZACIÓN: Usar forceApi: false para cargar desde ObjectBox en vez de API (mucho más rápido)
         if (item.variationId != null && item.variationId!.isNotEmpty) {
-          productDetails = await productRepo.getVariationById(item.productId, item.variationId!, forceApi: true);
+          productDetails = await productRepo.getVariationById(item.productId, item.variationId!, forceApi: false);
           if (productDetails?.parentId != null) {
-            parentDetails = await productRepo.getProductById(productDetails!.parentId.toString(), forceApi: true);
+            parentDetails = await productRepo.getProductById(productDetails!.parentId.toString(), forceApi: false);
           }
         } else {
-          productDetails = await productRepo.getProductById(item.productId, forceApi: true);
+          productDetails = await productRepo.getProductById(item.productId, forceApi: false);
         }
 
         if (productDetails != null) {
@@ -994,10 +1003,13 @@ class _InventoryAdjustmentFormScreenState
               return prev;
             }) ?? {},
             barcode: productDetails.barcode ?? productDetails.sku,
+            // ⚡ Almacenar en caché para carga rápida
+            cachedProductName: productDetails.name,
+            cachedSku: productDetails.sku,
             product: parentDetails ?? productDetails,
             resolvedVariant: item.variationId != null ? productDetails : null,
           );
-          labelProvider.addOrUpdateItem(labelItem);
+          labelNotifier.addOrUpdateItem(labelItem);
         }
       }
       if (mounted && Navigator.of(context, rootNavigator: true).canPop()) {
@@ -1027,7 +1039,7 @@ class _InventoryAdjustmentFormScreenState
     bool canAddToBatch = productForCurrentDisplay != null && !_isLoadingProductDetails &&
         (!(productForCurrentDisplay.isVariable) || _currentResolvedVariant != null);
 
-    if (canAddToBatch && productForCurrentDisplay != null) {
+    if (canAddToBatch) {
       if (_isStockTakeMode) {
         canAddToBatch = true;
       } else {
@@ -1043,7 +1055,7 @@ class _InventoryAdjustmentFormScreenState
         if (_massAdjustmentBatch.isNotEmpty) {
           _triggerCacheSave();
         } else {
-          await context.read<InventoryProvider>().clearCachedAdjustment();
+          await ref.read(inventoryProvider.notifier).clearCachedAdjustment();
         }
         return true;
       },
@@ -1339,7 +1351,13 @@ class _InventoryAdjustmentFormScreenState
                                 maxValue: !_isStockTakeMode && !_isCurrentItemEntry && productForDisplay.manageStock
                                     ? (productForDisplay.stockQuantity ?? 0)
                                     : 9999,
-                                onChanged: (val) { if (mounted) setState(() { if (_isStockTakeMode) _newTotalStock = val; else _currentQuantity = val; });}
+                                onChanged: (val) { if (mounted) {
+                                  setState(() { if (_isStockTakeMode) {
+                                  _newTotalStock = val;
+                                } else {
+                                  _currentQuantity = val;
+                                } });
+                                }}
                             )
                         ),
                         if (!_isStockTakeMode)
@@ -1473,13 +1491,13 @@ class _InventoryAdjustmentFormScreenState
           children: [
             Expanded(
                 child: OutlinedButton(
-                    child: const Text('CANCELAR'),
                     onPressed: _isSavingBatch ? null : () => Navigator.pop(context),
                     style: OutlinedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 14),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                         side: BorderSide(color: Colors.grey.shade400)
-                    )
+                    ),
+                    child: const Text('CANCELAR')
                 )
             ),
             const SizedBox(width: 12),

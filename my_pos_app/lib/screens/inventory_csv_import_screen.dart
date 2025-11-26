@@ -2,14 +2,14 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:csv/csv.dart';
-import 'package:collection/collection.dart'; // <-- LÍNEA AÑADIDA PARA LA CORRECCIÓN
+import 'package:collection/collection.dart';
 
 import '../models/inventory_movement.dart';
 import '../models/product.dart' as app_product;
-import '../providers/inventory_provider.dart';
+import '../providers/inventory_notifier.dart';
 import '../repositories/product_repository.dart';
 import '../services/csv_service.dart';
 import '../widgets/app_header.dart';
@@ -33,14 +33,15 @@ class CsvAdjustmentPreview {
   });
 }
 
-class InventoryCsvImportScreen extends StatefulWidget {
-  const InventoryCsvImportScreen({Key? key}) : super(key: key);
+/// ✓ FASE 2 RIVERPOD: Migrado a ConsumerStatefulWidget
+class InventoryCsvImportScreen extends ConsumerStatefulWidget {
+  const InventoryCsvImportScreen({super.key});
 
   @override
-  State<InventoryCsvImportScreen> createState() => _InventoryCsvImportScreenState();
+  ConsumerState<InventoryCsvImportScreen> createState() => _InventoryCsvImportScreenState();
 }
 
-class _InventoryCsvImportScreenState extends State<InventoryCsvImportScreen> {
+class _InventoryCsvImportScreenState extends ConsumerState<InventoryCsvImportScreen> {
   final CsvService _csvService = getIt<CsvService>();
   List<CsvAdjustmentPreview> _previewLines = [];
   String? _filePath;
@@ -55,9 +56,9 @@ class _InventoryCsvImportScreenState extends State<InventoryCsvImportScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final provider = context.read<InventoryProvider>();
-      if (provider.inventoryProducts.isEmpty) {
-        provider.loadInventoryProducts();
+      final inventoryState = ref.read(inventoryProvider);
+      if (inventoryState.inventoryProducts.isEmpty) {
+        ref.read(inventoryProvider.notifier).loadInventoryProducts();
       }
     });
   }
@@ -176,7 +177,7 @@ class _InventoryCsvImportScreenState extends State<InventoryCsvImportScreen> {
     if (_previewLines.isEmpty) return;
 
     setState(() { _isLoading = true; _loadingMessage = "Guardando ajuste masivo..."; });
-    final inventoryProvider = context.read<InventoryProvider>();
+    final inventoryNotifier = ref.read(inventoryProvider.notifier);
 
     final groupedByOperation = groupBy(_previewLines, (p) => p.operation);
     bool anySuccess = false;
@@ -200,13 +201,14 @@ class _InventoryCsvImportScreenState extends State<InventoryCsvImportScreen> {
 
       if (itemsToAdjust.isEmpty) continue;
 
-      final success = await inventoryProvider.performMassInventoryAdjustment(
+      final success = await inventoryNotifier.performMassInventoryAdjustment(
         type: operation == 'Conteo Físico' ? InventoryMovementType.stockCorrection : InventoryMovementType.supplierReceipt,
         description: "Ajuste masivo desde CSV: $_filePath ($operation)",
         itemsToAdjust: itemsToAdjust,
       );
       if (success) anySuccess = true;
-      finalMessage += "$operation: ${success ? 'Éxito' : (inventoryProvider.errorMessage ?? 'Fallo')}. ";
+      final inventoryState = ref.read(inventoryProvider);
+      finalMessage += "$operation: ${success ? 'Éxito' : (inventoryState.errorMessage ?? 'Fallo')}. ";
     }
 
     if (!mounted) return;
@@ -224,12 +226,12 @@ class _InventoryCsvImportScreenState extends State<InventoryCsvImportScreen> {
     }
   }
 
-  void _handleExport(InventoryProvider provider) async {
+  void _handleExport(invState) async {
     setState(() { _isLoading = true; _loadingMessage = "Generando archivo de exportación..."; });
     try {
       await _csvService.exportCurrentInventory(
-        products: provider.inventoryProducts,
-        categories: provider.allCategories,
+        products: invState.inventoryProducts,
+        categories: invState.allCategories,
         categoryFilterId: _exportCategoryFilter,
         typeFilter: _exportTypeFilter,
       );
@@ -263,7 +265,7 @@ class _InventoryCsvImportScreenState extends State<InventoryCsvImportScreen> {
   }
 
   Widget _buildInitialView(ThemeData theme) {
-    final inventoryProvider = context.watch<InventoryProvider>();
+    final inventoryState = ref.watch(inventoryProvider);
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
       child: Column(
@@ -287,7 +289,7 @@ class _InventoryCsvImportScreenState extends State<InventoryCsvImportScreen> {
                           value: _exportCategoryFilter,
                           items: [
                             const DropdownMenuItem(value: 'all', child: Text('Todas')),
-                            ...inventoryProvider.allCategories.map((c) => DropdownMenuItem(value: c['id'].toString(), child: Text(c['name']))),
+                            ...inventoryState.allCategories.map((c) => DropdownMenuItem(value: c['id'].toString(), child: Text(c['name']))),
                           ],
                           onChanged: (val) => setState(() => _exportCategoryFilter = val ?? 'all'),
                         ),
@@ -309,7 +311,7 @@ class _InventoryCsvImportScreenState extends State<InventoryCsvImportScreen> {
                     ],
                   ),
                   const SizedBox(height: 16),
-                  ElevatedButton.icon(icon: const Icon(Icons.download), label: const Text("Exportar Inventario"), onPressed: inventoryProvider.isLoadingProducts ? null : () => _handleExport(inventoryProvider),),
+                  ElevatedButton.icon(icon: const Icon(Icons.download), label: const Text("Exportar Inventario"), onPressed: inventoryState.isLoadingProducts ? null : () => _handleExport(inventoryState),),
                 ],
               ),
             ),

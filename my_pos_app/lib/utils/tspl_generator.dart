@@ -32,7 +32,7 @@ String generateTsplCommandsIsolate(TsplGenerationData data) {
   final int widthDots = (labelWidthMm * 8).round();
   final int heightDots = (labelHeightMm * 8).round();
 
-  sb.writeln('SIZE ${labelWidthMm} mm, ${labelHeightMm} mm');
+  sb.writeln('SIZE $labelWidthMm mm, $labelHeightMm mm');
   sb.writeln('GAP 3 mm, 0 mm');
   sb.writeln('SPEED ${data.speed}');
   sb.writeln('DENSITY ${data.density}');

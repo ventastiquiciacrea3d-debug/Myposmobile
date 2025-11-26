@@ -1,8 +1,6 @@
 // lib/repositories/product_repository.dart
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/foundation.dart';
-import 'package:collection/collection.dart';
 import 'package:my_pos_mobile_barcode/main.dart';
 
 import '../models/product.dart';
@@ -47,12 +45,9 @@ class ProductRepository {
 
       if (cachedProduct != null && cacheTimestamp != null && DateTime.now().isBefore(cacheTimestamp.add(ttlDuration))) {
         debugPrint("... [Cache HIT - Valid TTL] Returning cached Product $productId.");
-        // Opcional: Refrescar en segundo plano si se quiere aún más frescura
-        // _fetchAndUpdateProductInBackground(productId, isVariation: false);
         return cachedProduct;
       } else if (cachedProduct != null) {
-        debugPrint("... [Cache HIT - STALE] Returning stale cached Product $productId. Triggering background update.");
-        _fetchAndUpdateProductInBackground(productId, isVariation: false);
+        debugPrint("... [Cache HIT - STALE] Returning stale cached Product $productId. Delta Sync will update when needed.");
         return cachedProduct;
       }
     }
@@ -79,36 +74,6 @@ class ProductRepository {
     }
   }
 
-  Future<void> _fetchAndUpdateProductInBackground(String id, {required bool isVariation, String? parentProductId}) async {
-    final String type = isVariation ? "Variation" : "Product";
-    final String fullId = isVariation ? "$parentProductId/$id" : id;
-    debugPrint("... [Background Update] Starting for $type $fullId");
-    try {
-      Product? apiItem;
-      String apiResponse;
-      if (isVariation) {
-        if (parentProductId == null) return;
-        apiResponse = await _wooCommerceService.getProductById(id, useCompute: true);
-      } else {
-        apiResponse = await _wooCommerceService.getProductById(id, useCompute: true);
-      }
-
-      apiItem = await compute(parseProductJsonInBackground, apiResponse);
-
-      if (apiItem != null) {
-        await _storageService.cacheProduct(apiItem, fullAttributesWithOptions: apiItem.fullAttributesWithOptions);
-        if (!_productUpdateController.isClosed) {
-          _productUpdateController.add(apiItem);
-        }
-        debugPrint("... [Background Update] SUCCESS for $type $fullId.");
-      }
-    } catch (e) {
-      if (e is! AuthenticationException) {
-        debugPrint("... [Background Update] FAILED for $type $fullId: ${e.toString()}");
-      }
-    }
-  }
-
   Future<Product?> getVariationById(String parentProductId, String variationId, { bool forceApi = false }) async {
     return await getProductById(variationId, forceApi: forceApi);
   }
@@ -121,7 +86,7 @@ class ProductRepository {
     if (cachedProduct != null) {
       final cacheTimestamp = _storageService.getProductCacheTimestamp(cachedProduct.id);
       if (cacheTimestamp != null && DateTime.now().isBefore(cacheTimestamp.add(ttlDuration))) {
-        _fetchAndUpdateProductInBackground(cachedProduct.id, isVariation: cachedProduct.isVariation, parentProductId: cachedProduct.parentId?.toString());
+        debugPrint("... [Cache HIT] Returning cached product from barcode/SKU search. Delta Sync will update when needed.");
         return cachedProduct;
       }
     }
@@ -194,6 +159,73 @@ class ProductRepository {
       return { ...result, 'query': searchTerm };
     } catch (e) {
       debugPrint("[ProductRepository.searchProductsByTerm] Error: $e");
+      rethrow;
+    }
+  }
+
+  /// ✓ FASE 2 BATCH API: Obtiene múltiples productos en una sola petición
+  /// Resuelve el problema N+1 al cargar pedidos con múltiples items
+  Future<Map<String, Product>> getProductsByIds(List<String> productIds, {bool forceApi = false, bool lightweight = false}) async {
+    if (productIds.isEmpty) return {};
+
+    final Map<String, Product> result = {};
+    final List<int> idsToFetch = [];
+
+    // Si no forzamos API, intentar obtener del cache primero
+    if (!forceApi) {
+      for (final id in productIds) {
+        final cached = _storageService.getProductById(id, rehydrateAttributes: !lightweight);
+        if (cached != null) {
+          result[id] = cached;
+        } else {
+          idsToFetch.add(int.parse(id));
+        }
+      }
+    } else {
+      idsToFetch.addAll(productIds.map(int.parse));
+    }
+
+    // Si no hay nada que fetchear, retornar cache
+    if (idsToFetch.isEmpty) {
+      debugPrint("[ProductRepository.getProductsByIds] All ${productIds.length} products found in cache");
+      return result;
+    }
+
+    // Fetchear productos faltantes en batch
+    try {
+      debugPrint("[ProductRepository.getProductsByIds] Fetching ${idsToFetch.length} products via batch API");
+      final batchData = await _wooCommerceService.getProductsBatch(idsToFetch, lightweight: lightweight);
+
+      final List<Product> productsToCache = [];
+      final Map<String, List<Map<String, dynamic>>> attributesMap = {};
+
+      for (final entry in batchData.entries) {
+        final productId = entry.key;
+        final productJson = entry.value as Map<String, dynamic>;
+        final product = Product.fromJson(productJson);
+
+        productsToCache.add(product);
+        if (product.fullAttributesWithOptions != null && product.fullAttributesWithOptions!.isNotEmpty) {
+          attributesMap[productId] = product.fullAttributesWithOptions!;
+        }
+
+        // Emitir evento de actualización
+        if (!_productUpdateController.isClosed) {
+          _productUpdateController.add(product);
+        }
+
+        result[productId] = product;
+      }
+
+      // ✓ FASE 2 BATCH API: Cachear TODOS los productos en una sola operación Hive
+      if (productsToCache.isNotEmpty) {
+        await _storageService.cacheProductsBatch(productsToCache, fullAttributesMap: attributesMap);
+      }
+
+      debugPrint("[ProductRepository.getProductsByIds] Batch fetch complete: ${result.length}/${productIds.length} products loaded");
+      return result;
+    } catch (e) {
+      debugPrint("[ProductRepository.getProductsByIds] Error fetching batch: $e");
       rethrow;
     }
   }

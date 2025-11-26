@@ -2,30 +2,30 @@
 import 'dart:async';
 import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:my_pos_mobile_barcode/config/constants.dart';
 import 'package:my_pos_mobile_barcode/services/thermal_printer_service.dart';
 import 'package:my_pos_mobile_barcode/widgets/tspl_label_preview.dart';
-import 'package:provider/provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:print_bluetooth_thermal/print_bluetooth_thermal.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:flutter/foundation.dart';
 
 import '../models/label_print_item.dart';
-import '../providers/label_provider.dart';
+import '../providers/label_notifier.dart';
 import '../widgets/app_header.dart';
 import '../locator.dart';
 import '../utils/tspl_generator.dart';
 
-class ThermalPrintingScreen extends StatefulWidget {
+/// ✓ FASE 2 RIVERPOD: Migrado a ConsumerStatefulWidget
+class ThermalPrintingScreen extends ConsumerStatefulWidget {
   final List<LabelPrintItem> printQueue;
-  const ThermalPrintingScreen({Key? key, required this.printQueue}) : super(key: key);
+  const ThermalPrintingScreen({super.key, required this.printQueue});
 
   @override
-  State<ThermalPrintingScreen> createState() => _ThermalPrintingScreenState();
+  ConsumerState<ThermalPrintingScreen> createState() => _ThermalPrintingScreenState();
 }
 
-class _ThermalPrintingScreenState extends State<ThermalPrintingScreen> {
+class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
   final ThermalPrinterService _printerService = ThermalPrinterService();
   final SharedPreferences _prefs = getIt<SharedPreferences>();
 
@@ -164,8 +164,8 @@ class _ThermalPrintingScreenState extends State<ThermalPrintingScreen> {
       _printStatusMessage = 'Iniciando impresión...';
     });
 
-    final labelProvider = context.read<LabelProvider>();
-    final settings = labelProvider.settings;
+    final labelState = ref.read(labelProvider);
+    final settings = labelState.settings;
     final navigator = Navigator.of(context);
     final scaffoldMessenger = ScaffoldMessenger.of(context);
 
@@ -204,7 +204,7 @@ class _ThermalPrintingScreenState extends State<ThermalPrintingScreen> {
 
         if (mounted) {
           setState(() {
-            _printStatusMessage = 'Enviando ${end} de $totalItems etiquetas...';
+            _printStatusMessage = 'Enviando $end de $totalItems etiquetas...';
           });
         }
 
@@ -223,7 +223,7 @@ class _ThermalPrintingScreenState extends State<ThermalPrintingScreen> {
       }
 
       scaffoldMessenger.showSnackBar(const SnackBar(content: Text('Impresión completada.'), backgroundColor: Colors.green));
-      labelProvider.clearQueue();
+      ref.read(labelProvider.notifier).clearQueue();
       navigator.pop(true);
 
     } catch (e) {
@@ -253,8 +253,8 @@ class _ThermalPrintingScreenState extends State<ThermalPrintingScreen> {
     if (!_isBluetoothEnabled) return _buildBluetoothDisabledWarning();
     if (_errorText != null) return Center(child: Padding(padding: const EdgeInsets.all(20), child: Text(_errorText!, style: const TextStyle(color: Colors.red), textAlign: TextAlign.center)));
 
-    final labelProvider = context.watch<LabelProvider>();
-    final settings = labelProvider.settings;
+    final labelState = ref.watch(labelProvider);
+    final settings = labelState.settings;
 
     return ListView(
       padding: const EdgeInsets.all(16.0),
@@ -274,7 +274,7 @@ class _ThermalPrintingScreenState extends State<ThermalPrintingScreen> {
           ),
           const Divider(height: 30),
         ],
-        _buildPrintSettingsCard(settings, labelProvider),
+        _buildPrintSettingsCard(settings, labelState),
         const Divider(height: 30),
         Text("Cola de Impresión (${widget.printQueue.length})", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         const SizedBox(height: 10),
@@ -307,7 +307,7 @@ class _ThermalPrintingScreenState extends State<ThermalPrintingScreen> {
     );
   }
 
-  Widget _buildPrintSettingsCard(LabelSettings settings, LabelProvider labelProvider) {
+  Widget _buildPrintSettingsCard(LabelSettings settings, labelState) {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16.0),

@@ -1,0 +1,327 @@
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../models/product_compact.dart';
+import 'woocommerce_service.dart';
+import 'database_service.dart';
+
+/// Handler para mensajes en background (DEBE ser top-level function)
+@pragma('vm:entry-point')
+Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  debugPrint("[FCM-Background] Message received: ${message.data}");
+
+  // Guardar mensaje pendiente para procesar cuando app abra
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.setString('pending_fcm_sync', jsonEncode(message.data));
+}
+
+/// Servicio de sincronización delta con FCM
+class DeltaSyncService extends ChangeNotifier {
+  final WooCommerceService _wooCommerceService;
+  final DatabaseService _db;
+  final FirebaseMessaging _fcm = FirebaseMessaging.instance;
+
+  static const String _lastSyncKey = 'last_delta_sync_timestamp';
+  static const String _deviceTokenKey = 'device_fcm_token';
+
+  bool _isSyncing = false;
+  String? _lastSyncError;
+  DateTime? _lastSyncTime;
+
+  bool get isSyncing => _isSyncing;
+  String? get lastSyncError => _lastSyncError;
+  DateTime? get lastSyncTime => _lastSyncTime;
+
+  DeltaSyncService({
+    required WooCommerceService wooCommerceService,
+    required DatabaseService database,
+  })  : _wooCommerceService = wooCommerceService,
+        _db = database;
+
+  /// Inicializar servicio FCM
+  Future<void> initialize() async {
+    debugPrint("[DeltaSyncService] Initializing...");
+
+    // 1. Configurar handler para mensajes en background
+    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+
+    // 2. Solicitar permisos de notificaciones
+    final settings = await _fcm.requestPermission(
+      alert: true,
+      badge: true,
+      sound: true,
+      provisional: false,
+    );
+
+    if (settings.authorizationStatus == AuthorizationStatus.authorized) {
+      debugPrint("[DeltaSyncService] ✅ Notification permissions granted");
+
+      // 3. Obtener FCM token
+      final token = await _fcm.getToken();
+      if (token != null) {
+        debugPrint("[DeltaSyncService] FCM Token: ${token.substring(0, 20)}...");
+
+        // 4. Registrar dispositivo en WordPress
+        await _registerDevice(token);
+
+        // Guardar token localmente
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_deviceTokenKey, token);
+      }
+
+      // 5. Escuchar refresh de token
+      _fcm.onTokenRefresh.listen((newToken) {
+        debugPrint("[DeltaSyncService] Token refreshed");
+        _registerDevice(newToken);
+      });
+
+      // 6. Escuchar mensajes cuando app está en foreground
+      FirebaseMessaging.onMessage.listen(_handleForegroundMessage);
+
+      // 7. Escuchar cuando usuario toca la notificación
+      FirebaseMessaging.onMessageOpenedApp.listen(_handleMessageOpened);
+
+      // 8. Verificar si hay mensaje pendiente al abrir app
+      final initialMessage = await _fcm.getInitialMessage();
+      if (initialMessage != null) {
+        debugPrint("[DeltaSyncService] App opened from notification");
+        await _handleMessageOpened(initialMessage);
+      }
+
+      // 9. Verificar si hay sync pendiente de background
+      await _checkPendingSync();
+
+      debugPrint("[DeltaSyncService] ✅ Initialization complete");
+    } else {
+      debugPrint("[DeltaSyncService] ⚠️ Notification permissions denied");
+    }
+  }
+
+  /// Registrar dispositivo en WordPress
+  Future<void> _registerDevice(String fcmToken) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final deviceId = prefs.getString('device_uuid') ?? 'unknown';
+
+      await _wooCommerceService.registerDevice(
+        fcmToken: fcmToken,
+        deviceId: deviceId,
+      );
+
+      debugPrint("[DeltaSyncService] ✅ Device registered with WordPress");
+    } catch (e) {
+      debugPrint("[DeltaSyncService] ❌ Failed to register device: $e");
+    }
+  }
+
+  /// Manejar mensaje cuando app está en foreground
+  Future<void> _handleForegroundMessage(RemoteMessage message) async {
+    debugPrint("[DeltaSyncService] 📩 Foreground message: ${message.data}");
+
+    final data = message.data;
+    final type = data['type'] as String?;
+
+    if (type == 'stock_change' || type == 'price_change') {
+      // OPTIMIZACIÓN V2: Actualizar desde payload (CERO API calls)
+      final productsJson = data['products'] as String?;
+
+      if (productsJson != null && productsJson.isNotEmpty) {
+        try {
+          await _updateFromPayload(productsJson);
+          debugPrint("[DeltaSyncService] ✅ Updated from payload - ZERO API calls");
+        } catch (e) {
+          debugPrint("[DeltaSyncService] ❌ Payload update failed: $e");
+          // Fallback a delta sync
+          await performDeltaSync();
+        }
+      } else {
+        // Sin payload: usar delta sync
+        await performDeltaSync();
+      }
+    } else if (type == 'bulk_sync') {
+      // Más de 10 productos: usar delta endpoint
+      debugPrint("[DeltaSyncService] 📦 Bulk update detected");
+      await performDeltaSync();
+    } else if (type == 'order_completed') {
+      // Pedido completado: sincronizar productos afectados
+      debugPrint("[DeltaSyncService] 🛒 Order completed notification");
+      await performDeltaSync();
+    }
+  }
+
+  /// Actualizar productos desde payload FCM (CERO API calls)
+  Future<void> _updateFromPayload(String productsJson) async {
+    final products = jsonDecode(productsJson) as List;
+
+    debugPrint("[DeltaSyncService] 📦 Updating ${products.length} products from payload");
+
+    final box = _db.store.box<ProductCompact>();
+
+    for (final productData in products) {
+      final productId = int.parse(productData['id'] as String);
+
+      // Buscar producto existente
+      final query = box.query(ProductCompact_.id.equals(productId)).build();
+      final existing = query.findFirst();
+      query.close();
+
+      if (existing != null) {
+        // Actualizar solo campos modificados
+        existing.stockQuantity = productData['stock'] as int;
+        existing.priceInCents = ((productData['price'] as num) * 100).toInt();
+        existing.stockStatus = productData['status'] as String;
+        existing.lastUpdated = DateTime.now();
+
+        box.put(existing);
+
+        debugPrint("[DeltaSyncService] ✅ Updated ${existing.name} - Stock: ${existing.stockQuantity}");
+      } else {
+        debugPrint("[DeltaSyncService] ⚠️ Product $productId not found in local DB");
+      }
+    }
+
+    // Actualizar timestamp de última sync
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_lastSyncKey, DateTime.now().millisecondsSinceEpoch ~/ 1000);
+
+    _lastSyncTime = DateTime.now();
+    notifyListeners();
+  }
+
+  /// Manejar cuando usuario toca la notificación
+  Future<void> _handleMessageOpened(RemoteMessage message) async {
+    debugPrint("[DeltaSyncService] 👆 Notification tapped: ${message.data}");
+    await performDeltaSync();
+  }
+
+  /// Verificar si hay sync pendiente de background
+  Future<void> _checkPendingSync() async {
+    final prefs = await SharedPreferences.getInstance();
+    final pendingSync = prefs.getString('pending_fcm_sync');
+
+    if (pendingSync != null) {
+      debugPrint("[DeltaSyncService] 📦 Pending sync detected");
+
+      final data = jsonDecode(pendingSync) as Map<String, dynamic>;
+
+      // Procesar mensaje pendiente
+      if (data['type'] == 'stock_change' || data['type'] == 'price_change') {
+        final productsJson = data['products'] as String?;
+        if (productsJson != null) {
+          await _updateFromPayload(productsJson);
+        }
+      } else {
+        await performDeltaSync();
+      }
+
+      // Limpiar pendiente
+      await prefs.remove('pending_fcm_sync');
+    }
+  }
+
+  /// Realizar sincronización delta (solo productos modificados)
+  Future<void> performDeltaSync({
+    int? priorityFilter,
+    bool force = false,
+  }) async {
+    if (_isSyncing && !force) {
+      debugPrint("[DeltaSyncService] ⏸️ Sync already in progress");
+      return;
+    }
+
+    _isSyncing = true;
+    _lastSyncError = null;
+    notifyListeners();
+
+    try {
+      // Obtener timestamp de última sincronización
+      final prefs = await SharedPreferences.getInstance();
+      final lastSync = prefs.getInt(_lastSyncKey) ??
+          (DateTime.now().subtract(const Duration(days: 7)).millisecondsSinceEpoch ~/ 1000);
+
+      debugPrint("[DeltaSyncService] 🔄 Fetching changes since: ${DateTime.fromMillisecondsSinceEpoch(lastSync * 1000)}");
+
+      // Obtener productos modificados desde WordPress
+      final response = await _wooCommerceService.getDeltaProducts(
+        since: lastSync,
+        priority: priorityFilter,
+        lightweight: false,
+      );
+
+      final changedProducts = response['products'] as Map<String, dynamic>;
+      final count = response['count'] as int;
+
+      if (count == 0) {
+        debugPrint("[DeltaSyncService] ✅ No changes detected");
+      } else {
+        debugPrint("[DeltaSyncService] 📥 Updating $count products...");
+
+        final box = _db.store.box<ProductCompact>();
+
+        for (final entry in changedProducts.entries) {
+          final productJson = entry.value as Map<String, dynamic>;
+
+          // Parsear producto compacto
+          final product = _parseCompactProduct(productJson);
+
+          // Guardar en ObjectBox
+          box.put(product);
+        }
+
+        debugPrint("[DeltaSyncService] ✅ $count products updated in local DB");
+      }
+
+      // Actualizar timestamp de última sincronización
+      final newTimestamp = response['timestamp'] as int;
+      await prefs.setInt(_lastSyncKey, newTimestamp);
+
+      _lastSyncTime = DateTime.now();
+
+      debugPrint("[DeltaSyncService] ✅ Delta sync completed successfully");
+    } catch (e, stackTrace) {
+      _lastSyncError = e.toString();
+      debugPrint("[DeltaSyncService] ❌ Delta sync failed: $e");
+      debugPrint("StackTrace: $stackTrace");
+    } finally {
+      _isSyncing = false;
+      notifyListeners();
+    }
+  }
+
+  /// Parsear producto en formato compacto desde WordPress
+  ProductCompact _parseCompactProduct(Map<String, dynamic> json) {
+    return ProductCompact(
+      id: json['id'] as int,
+      name: json['n'] as String, // nombre comprimido
+      sku: json['s'] as String?, // sku comprimido
+      barcode: json['b'] as String?,
+      stockQuantity: json['st'] as int,
+      priceInCents: json['p'] as int,
+      stockStatus: json['ss'] as String,
+      type: json['t'] as String? ?? 'simple',
+      lastUpdated: DateTime.now(),
+    );
+  }
+
+  /// Obtener estadísticas de sincronización
+  Map<String, dynamic> getSyncStats() {
+    return {
+      'is_syncing': _isSyncing,
+      'last_sync_time': _lastSyncTime?.toIso8601String(),
+      'last_sync_error': _lastSyncError,
+      'total_products': _db.store.box<ProductCompact>().count(),
+    };
+  }
+
+  /// Forzar sincronización completa (para testing)
+  Future<void> forceFullSync() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    // Resetear timestamp a 7 días atrás
+    final weekAgo = DateTime.now().subtract(const Duration(days: 7));
+    await prefs.setInt(_lastSyncKey, weekAgo.millisecondsSinceEpoch ~/ 1000);
+
+    await performDeltaSync(force: true);
+  }
+}

@@ -8,10 +8,10 @@ class LabelPreview extends StatelessWidget {
   final SerializableLabelData data;
 
   const LabelPreview({
-    Key? key,
+    super.key,
     required this.settings,
     required this.data,
-  }) : super(key: key);
+  });
 
   static Map<String, dynamic> _getFontStyles(String sizeKey, String weightKey) {
     const Map<String, double> sizeMap = {'small': 10.0, 'medium': 12.0, 'large': 15.0};

@@ -1,10 +1,25 @@
 // lib/app.dart
 import 'package:flutter/material.dart';
 import 'config/routes.dart'; // Importa la configuración de rutas de la aplicación.
+import 'services/background_service.dart';
 
 // MyPosApp es el widget raíz de la aplicación.
 class MyPosApp extends StatelessWidget {
-  const MyPosApp({Key? key}) : super(key: key);
+  const MyPosApp({super.key});
+
+  /// ✓ CORRECCIÓN: Inicializar background service DESPUÉS del splash
+  /// Se ejecuta en el main isolate una sola vez después de la primera navegación
+  static Future<void> initializeBackgroundServicePostSplash() async {
+    try {
+      debugPrint("[MyPosApp] Initializing background service post-splash...");
+      final backgroundService = AppBackgroundService();
+      await backgroundService.initializeService();
+      debugPrint("[MyPosApp] Background service initialized successfully");
+    } catch (e) {
+      debugPrint("[MyPosApp] Warning: Background service initialization failed: $e");
+      // No es crítico, la app puede funcionar sin el background service
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -65,26 +80,26 @@ class MyPosApp extends StatelessWidget {
       ),
 
       switchTheme: SwitchThemeData(
-        thumbColor: MaterialStateProperty.resolveWith<Color?>((Set<MaterialState> states) {
-          if (states.contains(MaterialState.disabled)) {
+        thumbColor: WidgetStateProperty.resolveWith<Color?>((Set<WidgetState> states) {
+          if (states.contains(WidgetState.disabled)) {
             return Colors.grey.shade200;
           }
-          if (states.contains(MaterialState.selected)) {
+          if (states.contains(WidgetState.selected)) {
             return const Color(0xFFE53935);
           }
           return Colors.white;
         }),
-        trackColor: MaterialStateProperty.resolveWith<Color?>((Set<MaterialState> states) {
-          if (states.contains(MaterialState.disabled)) {
+        trackColor: WidgetStateProperty.resolveWith<Color?>((Set<WidgetState> states) {
+          if (states.contains(WidgetState.disabled)) {
             return Colors.grey.shade300;
           }
-          if (states.contains(MaterialState.selected)) {
+          if (states.contains(WidgetState.selected)) {
             return const Color(0xFFE53935).withOpacity(0.5);
           }
           return Colors.grey.shade400;
         }),
-        trackOutlineColor: MaterialStateProperty.resolveWith<Color?>((Set<MaterialState> states) {
-          if (states.contains(MaterialState.disabled)) {
+        trackOutlineColor: WidgetStateProperty.resolveWith<Color?>((Set<WidgetState> states) {
+          if (states.contains(WidgetState.disabled)) {
             return Colors.grey.shade300.withOpacity(0.5);
           }
           return Colors.transparent;
@@ -100,7 +115,7 @@ class MyPosApp extends StatelessWidget {
       ),
 
       colorScheme: ColorScheme.fromSwatch(primarySwatch: Colors.red)
-          .copyWith(secondary: Colors.redAccent, background: Colors.grey.shade100),
+          .copyWith(secondary: Colors.redAccent, surface: Colors.grey.shade100),
     );
 
     return MaterialApp(

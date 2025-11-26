@@ -22,7 +22,7 @@ class HistoryOrderItemCard extends StatefulWidget {
   final VoidCallback? onChangeStatusAction; // Acción para cambiar estado desde Slidable
 
   const HistoryOrderItemCard({
-    Key? key,
+    super.key,
     required this.order,
     required this.currencyFormat,
     required this.dateTimeFormat,
@@ -36,7 +36,7 @@ class HistoryOrderItemCard extends StatefulWidget {
     required this.statusIconBuilder,
     this.slidableController,
     this.onChangeStatusAction,
-  }) : super(key: key);
+  });
 
   @override
   _HistoryOrderItemCardState createState() => _HistoryOrderItemCardState();
@@ -197,7 +197,7 @@ class _HistoryOrderItemCardState extends State<HistoryOrderItemCard> {
                       // Lista de ítems del pedido
                       ...itemsToDisplay.map((item) => Padding(
                           padding: const EdgeInsets.symmetric(vertical: 3),
-                          child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [ Expanded(child: Text('${item.quantity}x ${item.name}', style: const TextStyle(fontSize: 13), maxLines: 1, overflow: TextOverflow.ellipsis)), Text(widget.currencyFormat.format(item.effectiveSubtotal), style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 13))]))).toList(),
+                          child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [ Expanded(child: Text('${item.quantity}x ${item.name}', style: const TextStyle(fontSize: 13), maxLines: 1, overflow: TextOverflow.ellipsis)), Text(widget.currencyFormat.format(item.effectiveSubtotal), style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 13))]))),
 
                       // Botón para "Mostrar todos" si hay más ítems
                       if (hasMoreItemsToShowButton)

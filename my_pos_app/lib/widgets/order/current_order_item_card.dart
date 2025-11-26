@@ -1,13 +1,13 @@
 // lib/widgets/order/current_order_item_card.dart
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../models/order.dart' show OrderItem;
-import '../../providers/order_provider.dart';
+import '../../providers/order_notifier.dart';
 import '../../widgets/quantity_selector.dart';
 
-class CurrentOrderItemCard extends StatelessWidget {
+class CurrentOrderItemCard extends ConsumerWidget {
   final OrderItem item;
   final NumberFormat currencyFormat;
   final bool isExpanded;
@@ -18,7 +18,7 @@ class CurrentOrderItemCard extends StatelessWidget {
   final VoidCallback onDelete;
 
   const CurrentOrderItemCard({
-    Key? key,
+    super.key,
     required this.item,
     required this.currencyFormat,
     required this.isExpanded,
@@ -27,12 +27,12 @@ class CurrentOrderItemCard extends StatelessWidget {
     required this.onShowDiscountModal,
     required this.onDuplicate,
     required this.onDelete,
-  }) : super(key: key);
+  });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final orderProvider = context.read<OrderProvider>();
+    final orderNotifier = ref.read(currentOrderProvider.notifier);
 
     final bool isVariableProduct = item.productType == 'variation' || item.productType == 'variable';
     final String displayedName = item.name;
@@ -127,7 +127,7 @@ class CurrentOrderItemCard extends StatelessWidget {
                     Text("Precio Und.:", style: TextStyle(fontSize: 13, color: Colors.grey.shade700)),
                     Row(
                       children: [
-                        if (onSale && regularPrice != null)
+                        if (onSale)
                           Padding(
                             padding: const EdgeInsets.only(left: 8.0),
                             child: Text(
@@ -170,9 +170,9 @@ class CurrentOrderItemCard extends StatelessWidget {
                       onChanged: (newQuantity) {
                         final itemUniqueIdForProvider = item.isVariation ? '${item.productId}_${item.variationId!}' : item.productId;
                         if (newQuantity == 0) {
-                          orderProvider.removeItem(itemUniqueIdForProvider);
+                          orderNotifier.removeItem(itemUniqueIdForProvider);
                         } else {
-                          orderProvider.updateItemQuantity(itemUniqueIdForProvider, newQuantity);
+                          orderNotifier.updateItemQuantity(itemUniqueIdForProvider, newQuantity);
                         }
                       },
                     ),

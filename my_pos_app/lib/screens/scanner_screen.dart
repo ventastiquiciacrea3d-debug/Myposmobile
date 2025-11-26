@@ -1,36 +1,38 @@
 // lib/screens/scanner_screen.dart
-import 'dart.async';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/product.dart';
-import '../providers/scanner_provider.dart' show ScannerProvider, ScannerViewState, ScannerNotification, ScannerNotificationType;
-import '../providers/order_provider.dart';
-import '../providers/app_state_provider.dart';
+import '../providers/scanner_notifier.dart';
+import '../providers/scanner_state.dart';
+import '../providers/order_notifier.dart';
+import '../providers/app_state_notifier.dart';
+import '../providers/app_state.dart';
+import '../providers/shared_providers.dart';
 import '../widgets/app_header.dart';
 import '../config/constants.dart';
 import '../config/routes.dart';
 import '../widgets/dial_floating_action_button.dart';
 import '../widgets/custom_fab_location.dart';
 import '../widgets/add_to_cart_dialog.dart';
+import '../app.dart';
 
-class ScannerScreen extends StatefulWidget {
+class ScannerScreen extends ConsumerStatefulWidget {
   const ScannerScreen({Key? key}) : super(key: key);
-  @override State<ScannerScreen> createState() => _ScannerScreenState();
+  @override ConsumerState<ScannerScreen> createState() => _ScannerScreenState();
 }
 
-class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserver {
+class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindingObserver {
   final TextEditingController _barcodeController = TextEditingController();
   final FocusNode _barcodeFocusNode = FocusNode();
   final currencyFormat = NumberFormat.currency(locale: 'es_CR', symbol: '₡');
   Timer? _searchDebounce;
   bool _hideImagesInSearch = false;
   String _currentSearchQueryForDebounce = '';
-  bool _appStateListenerAdded = false;
   int _currentBottomNavIndex = 0;
 
   StreamSubscription? _rapidScanSubscription;
@@ -48,91 +50,81 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      final appState = context.read<AppStateProvider>();
-      final scannerProvider = context.read<ScannerProvider>();
+      final appStateValue = ref.read(appStateNotifierProvider);
+      final scannerNotifier = ref.read(scannerProvider.notifier);
 
-      scannerProvider.addListener(_onScannerStateChanged);
-      _setupRapidScanListeners(scannerProvider);
+      _setupRapidScanListeners(scannerNotifier);
+      _loadSettingsAndInitScanner(appStateValue.isAppConfigured);
 
-      if (!appState.isLoading) {
-        _loadSettingsAndInitScanner(appState.isAppConfigured);
-      } else {
-        appState.addListener(_onAppStateChangeForScannerInit);
-        _appStateListenerAdded = true;
-      }
+      // ✓ NUEVO: Inicializar background service AQUÍ, después del splash
+      MyPosApp.initializeBackgroundServicePostSplash();
     });
-  }
-
-  void _onAppStateChangeForScannerInit() {
-    if (!mounted) return;
-    final appState = context.read<AppStateProvider>();
-    if (!appState.isLoading) {
-      if (_appStateListenerAdded) {
-        try { appState.removeListener(_onAppStateChangeForScannerInit); } catch (e) { debugPrint("... Error removing listener _onAppStateChangeForScannerInit: $e"); }
-        _appStateListenerAdded = false;
-      }
-      _loadSettingsAndInitScanner(appState.isAppConfigured);
-    }
   }
 
   Future<void> _loadSettingsAndInitScanner(bool isAppConfigured) async {
     await _loadSearchSettings();
     if (mounted) {
-      final scannerProvider = context.read<ScannerProvider>();
-      if (isAppConfigured) await scannerProvider.startScanner(); else await scannerProvider.resetScanner(keepSearchResults: true);
+      final scannerNotifier = ref.read(scannerProvider.notifier);
+      if (isAppConfigured) await scannerNotifier.startScanner(); else await scannerNotifier.resetScanner(keepSearchResults: true);
       if (mounted) setState(() => _currentBottomNavIndex = 0);
     }
   }
 
   void _onFocusChange() {
     if (!mounted) return;
-    final scannerProvider = context.read<ScannerProvider>();
-    if (_barcodeFocusNode.hasFocus && scannerProvider.isCameraActive) {
-      scannerProvider.resetScanner(keepSearchResults: true);
-    } else if (!_barcodeFocusNode.hasFocus && !scannerProvider.isCameraActive && _barcodeController.text.isEmpty) {
-      scannerProvider.startScanner();
+    final scannerState = ref.read(scannerProvider);
+    final scannerNotifier = ref.read(scannerProvider.notifier);
+
+    if (_barcodeFocusNode.hasFocus && scannerState.isCameraActive) {
+      // User is typing - stop scanner
+      scannerNotifier.resetScanner(keepSearchResults: true);
+    } else if (!_barcodeFocusNode.hasFocus &&
+               !scannerState.isCameraActive &&
+               _barcodeController.text.isEmpty &&
+               !scannerState.isProcessingBarcode) {
+      // Only restart if not currently processing a barcode
+      debugPrint("[ScannerScreen] Focus lost - restarting scanner");
+      scannerNotifier.startScanner();
     }
     setState(() {});
   }
 
-  void _onScannerStateChanged() {
-    if (!mounted) return;
-    final scannerProvider = context.read<ScannerProvider>();
-    if (scannerProvider.state == ScannerViewState.productFound && scannerProvider.scannedProduct != null) {
-      if (mounted) _showProductBottomSheet(scannerProvider.scannedProduct!);
-    }
-  }
-
   void _showProductBottomSheet(Product product) {
     if (!mounted) return;
-    context.read<ScannerProvider>().resetScanner();
+    ref.read(scannerProvider.notifier).resetScanner();
     showModalBottomSheet(
       context: context, isScrollControlled: true, backgroundColor: Colors.transparent,
       builder: (context) => AddToCartDialog(productId: product.id),
     ).whenComplete(() {
-      if (mounted) context.read<ScannerProvider>().resumeScanning();
+      // Don't automatically resume - prevents camera restart loop
+      debugPrint("[ScannerScreen] Bottom sheet closed");
     });
   }
 
   @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    super.didChangeAppLifecycleState(state);
+  void didChangeAppLifecycleState(AppLifecycleState lifecycleState) {
+    super.didChangeAppLifecycleState(lifecycleState);
     if (!mounted) return;
     try {
-      final scannerProvider = context.read<ScannerProvider>();
-      final appStateProvider = context.read<AppStateProvider>();
-      if (scannerProvider.isDisposed || appStateProvider.isDisposed) return;
+      final scannerState = ref.read(scannerProvider);
+      final appStateValue = ref.read(appStateNotifierProvider);
 
-      switch (state) {
+      switch (lifecycleState) {
         case AppLifecycleState.resumed:
-          if (mounted && _barcodeController.text.trim().isEmpty && !_barcodeFocusNode.hasFocus && appStateProvider.isAppConfigured) {
-            scannerProvider.startScanner();
+          if (mounted &&
+              _barcodeController.text.trim().isEmpty &&
+              !_barcodeFocusNode.hasFocus &&
+              appStateValue.isAppConfigured &&
+              !scannerState.isCameraActive &&
+              !scannerState.isProcessingBarcode) {
+            debugPrint("[ScannerScreen] App resumed - restarting scanner");
+            ref.read(scannerProvider.notifier).startScanner();
           }
           break;
         case AppLifecycleState.inactive:
         case AppLifecycleState.paused:
         case AppLifecycleState.hidden:
-          if (scannerProvider.isCameraActive) scannerProvider.resetScanner();
+          if (scannerState.isCameraActive) ref.read(scannerProvider.notifier).resetScanner();
           break;
         case AppLifecycleState.detached:
           break;
@@ -154,21 +146,13 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     _searchDebounce?.cancel();
     _searchResultsScrollController.removeListener(_onSearchResultsScroll);
     _searchResultsScrollController.dispose();
-    try {
-      context.read<ScannerProvider>().removeListener(_onScannerStateChanged);
-    } catch (e) { debugPrint("[ScannerScreen] Error removing listener in dispose: ${e.toString()}"); }
-    if (_appStateListenerAdded) {
-      try {
-        Provider.of<AppStateProvider>(context, listen: false).removeListener(_onAppStateChangeForScannerInit);
-      } catch (e) { debugPrint("... Error removing listener in dispose: ${e.toString()}"); }
-    }
     super.dispose();
   }
 
   Future<void> _loadSearchSettings() async {
     try {
       if(mounted){
-        final prefs = context.read<SharedPreferences>();
+        final prefs = ref.read(sharedPreferencesProvider);
         if (mounted) setState(() => _hideImagesInSearch = prefs.getBool(hideSearchImagePrefKey) ?? false);
       }
     } catch (e) {
@@ -184,47 +168,45 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     if (searchText.isNotEmpty) {
       _searchDebounce = Timer(const Duration(milliseconds: 400), () {
         if (mounted && _barcodeController.text.trim() == searchText) {
-          final appState = context.read<AppStateProvider>();
-          final scannerProvider = context.read<ScannerProvider>();
-          if (scannerProvider.isDisposed) return;
-          if(appState.isAppConfigured && appState.connectionStatus == ConnectionStatus.online){
-            scannerProvider.performSearch(searchText);
+          final appStateValue = ref.read(appStateNotifierProvider);
+          final scannerNotifier = ref.read(scannerProvider.notifier);
+          if(appStateValue.isAppConfigured && appStateValue.isOnline){
+            scannerNotifier.performSearch(searchText);
           } else {
             ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                content: Text(appState.isAppConfigured ? "Necesitas conexión para buscar." : "Configura la API para buscar."),
+                content: Text(appStateValue.isAppConfigured ? "Necesitas conexión para buscar." : "Configura la API para buscar."),
                 backgroundColor: Colors.orange));
-            scannerProvider.clearSearch();
+            scannerNotifier.clearSearch();
           }
         }
       });
     } else {
-      if (mounted) context.read<ScannerProvider>().clearSearch();
+      if (mounted) ref.read(scannerProvider.notifier).clearSearch();
     }
   }
 
   void _onSearchResultsScroll() {
-    final scannerProvider = context.read<ScannerProvider>();
-    if (scannerProvider.isDisposed) return;
+    final scannerState = ref.read(scannerProvider);
     if (_searchResultsScrollController.position.pixels >= _searchResultsScrollController.position.maxScrollExtent - 200 &&
-        scannerProvider.canLoadMore && !scannerProvider.isLoadingMore) {
-      scannerProvider.loadMoreSearchResults();
+        scannerState.canLoadMore && !scannerState.isLoadingMore) {
+      ref.read(scannerProvider.notifier).loadMoreSearchResults();
     }
   }
 
   Future<void> _clearSearchAndResetScanner() async {
     _barcodeFocusNode.unfocus();
     _barcodeController.clear();
-    if (mounted) await context.read<ScannerProvider>().resetScanner();
+    if (mounted) await ref.read(scannerProvider.notifier).resetScanner();
   }
 
-  void _setupRapidScanListeners(ScannerProvider provider) {
+  void _setupRapidScanListeners(Scanner scannerNotifier) {
     _rapidScanSubscription?.cancel();
     _notificationSubscription?.cancel();
     if (!mounted) return;
 
-    _rapidScanSubscription = provider.onRapidScanSuccess.listen((product) {
+    _rapidScanSubscription = scannerNotifier.onRapidScanSuccess.listen((product) {
       if (mounted) {
-        context.read<OrderProvider>().addProduct(product, 1);
+        ref.read(currentOrderProvider.notifier).addProduct(product, 1);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text("'${product.name}' x1 agregado."),
@@ -235,7 +217,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
       }
     });
 
-    _notificationSubscription = provider.onScannerNotification.listen((notification) {
+    _notificationSubscription = scannerNotifier.onScannerNotification.listen((notification) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -252,8 +234,6 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
 
   void _showManualBarcodeDialog(BuildContext buildContext) {
     final TextEditingController manualController = TextEditingController();
-    final scannerProvider = Provider.of<ScannerProvider>(buildContext, listen: false);
-    final appState = Provider.of<AppStateProvider>(buildContext, listen: false);
     final scaffoldMessenger = ScaffoldMessenger.of(buildContext);
 
     showDialog(
@@ -264,12 +244,12 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
             controller: manualController,
             autofocus: true,
             decoration: const InputDecoration(hintText: 'Escriba el código SKU o de barras'),
-            onSubmitted: (value) => _submitManualCode(value, dialogContext, appState, scannerProvider, scaffoldMessenger),
+            onSubmitted: (value) => _submitManualCode(value, dialogContext, scaffoldMessenger),
           ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('CANCELAR')),
             TextButton(
-              onPressed: () => _submitManualCode(manualController.text, dialogContext, appState, scannerProvider, scaffoldMessenger),
+              onPressed: () => _submitManualCode(manualController.text, dialogContext, scaffoldMessenger),
               child: const Text('BUSCAR'),
             ),
           ],
@@ -277,15 +257,17 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     );
   }
 
-  void _submitManualCode(String value, BuildContext dialogContext, AppStateProvider appState, ScannerProvider scannerProvider, ScaffoldMessengerState scaffoldMessenger) {
+  void _submitManualCode(String value, BuildContext dialogContext, ScaffoldMessengerState scaffoldMessenger) {
     final code = value.trim();
     if (mounted && dialogContext.mounted) {
       if (code.isNotEmpty) {
         Navigator.pop(dialogContext);
-        if(appState.isAppConfigured && appState.connectionStatus == ConnectionStatus.online){
-          scannerProvider.scanBarcode(code);
+        final appStateValue = ref.read(appStateNotifierProvider);
+        final scannerNotifier = ref.read(scannerProvider.notifier);
+        if(appStateValue.isAppConfigured && appStateValue.isOnline){
+          scannerNotifier.scanBarcode(code);
         } else {
-          scaffoldMessenger.showSnackBar(SnackBar(content: Text(appState.isAppConfigured ? "Necesitas conexión para buscar." : "Configura la API."), backgroundColor: Colors.orange));
+          scaffoldMessenger.showSnackBar(SnackBar(content: Text(appStateValue.isAppConfigured ? "Necesitas conexión para buscar." : "Configura la API."), backgroundColor: Colors.orange));
         }
       } else {
         scaffoldMessenger.showSnackBar(const SnackBar(content: Text('Ingrese un código'), backgroundColor: Colors.orange));
@@ -306,8 +288,8 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
 
   @override
   Widget build(BuildContext context) {
-    final scannerProvider = context.watch<ScannerProvider>();
-    final appState = context.watch<AppStateProvider>();
+    final scannerState = ref.watch(scannerProvider);
+    final appStateValue = ref.watch(appStateNotifierProvider);
     final hasSearchQuery = _barcodeController.text.trim().isNotEmpty;
     final shouldShowSearchResultsView = _barcodeFocusNode.hasFocus && hasSearchQuery;
     final showBackButtonInAppBar = shouldShowSearchResultsView;
@@ -325,9 +307,19 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
         children: [
           Column(
             children: [
-              Selector<OrderProvider, ({int count, double total})>(
-                  selector: (_, provider) => (count: provider.currentOrder?.items.length ?? 0, total: provider.currentOrder?.total ?? 0.0),
-                  builder: (context, orderData, _) => orderData.count > 0 ? _buildOrderBar(context, orderData.count, orderData.total) : const SizedBox.shrink()
+              Consumer(
+                builder: (context, ref, _) {
+                  final currentOrderState = ref.watch(currentOrderProvider);
+                  return currentOrderState.when(
+                    data: (state) {
+                      final itemCount = state.order?.items.length ?? 0;
+                      final total = state.order?.total ?? 0.0;
+                      return itemCount > 0 ? _buildOrderBar(context, itemCount, total) : const SizedBox.shrink();
+                    },
+                    loading: () => const SizedBox.shrink(),
+                    error: (_, __) => const SizedBox.shrink(),
+                  );
+                },
               ),
               _buildOfflineIndicator(),
               Padding(
@@ -343,7 +335,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
                   ),
                 ),
               ),
-              if (scannerProvider.rapidScanModeEnabled && !_barcodeFocusNode.hasFocus)
+              if (scannerState.rapidScanModeEnabled && !_barcodeFocusNode.hasFocus)
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                   child: Container(
@@ -366,9 +358,9 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
               Expanded(
                 child: Stack(
                   children: [
-                    _buildScannerViewContent(scannerProvider, appState),
+                    _buildScannerViewContent(scannerState, appStateValue),
                     if (shouldShowSearchResultsView)
-                      _buildSearchResultsOverlay(scannerProvider, appState),
+                      _buildSearchResultsOverlay(scannerState, appStateValue),
                   ],
                 ),
               ),
@@ -396,7 +388,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     );
   }
 
-  Widget _buildSearchResultsOverlay(ScannerProvider scannerProvider, AppStateProvider appState) {
+  Widget _buildSearchResultsOverlay(ScannerState scannerState, AppState appStateValue) {
     return GestureDetector(
       onTap: () => _clearSearchAndResetScanner(),
       child: Container(
@@ -409,7 +401,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
               borderRadius: const BorderRadius.only(bottomLeft: Radius.circular(16), bottomRight: Radius.circular(16)),
               child: ConstrainedBox(
                 constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.6),
-                child: _buildSearchResultsListContent(scannerProvider, appState),
+                child: _buildSearchResultsListContent(scannerState, appStateValue),
               ),
             ),
           ],
@@ -418,18 +410,18 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     );
   }
 
-  Widget _buildSearchResultsListContent(ScannerProvider scannerProvider, AppStateProvider appState) {
+  Widget _buildSearchResultsListContent(ScannerState scannerState, AppState appStateValue) {
     final double bottomPadding = kBottomNavigationBarHeight + MediaQuery.of(context).padding.bottom + 24.0;
-    if (!appState.isAppConfigured) return const Center(child: Padding(padding: EdgeInsets.all(16.0), child: Text("Configure la API para buscar.")));
-    if (scannerProvider.isSearching && scannerProvider.searchResults.isEmpty) return _LoadingView(message: "Buscando...");
-    if (scannerProvider.searchErrorText != null && scannerProvider.searchResults.isEmpty) return _SearchErrorView(searchErrorText: scannerProvider.searchErrorText!, onRetry: () => _clearSearchAndResetScanner());
-    if (scannerProvider.searchResults.isNotEmpty) return _SearchResultsList(searchResults: scannerProvider.searchResults, hideImagesInSearch: _hideImagesInSearch, currencyFormat: currencyFormat, onProductTap: (product) {
+    if (!appStateValue.isAppConfigured) return const Center(child: Padding(padding: EdgeInsets.all(16.0), child: Text("Configure la API para buscar.")));
+    if (scannerState.isSearching && scannerState.searchResults.isEmpty) return const _LoadingView(message: "Buscando...");
+    if (scannerState.searchErrorText != null && scannerState.searchResults.isEmpty) return _SearchErrorView(searchErrorText: scannerState.searchErrorText!, onRetry: () => _clearSearchAndResetScanner());
+    if (scannerState.searchResults.isNotEmpty) return _SearchResultsList(searchResults: scannerState.searchResults, hideImagesInSearch: _hideImagesInSearch, currencyFormat: currencyFormat, onProductTap: (product) {
       if (mounted) {
         _showProductBottomSheet(product);
         _clearSearchAndResetScanner();
       }
-    }, bottomPadding: bottomPadding, scrollController: _searchResultsScrollController, isLoadingMore: scannerProvider.isLoadingMore, canLoadMore: scannerProvider.canLoadMore);
-    if (!scannerProvider.isSearching && scannerProvider.searchResults.isEmpty && _barcodeController.text.trim().length > 1) {
+    }, bottomPadding: bottomPadding, scrollController: _searchResultsScrollController, isLoadingMore: scannerState.isLoadingMore, canLoadMore: scannerState.canLoadMore);
+    if (!scannerState.isSearching && scannerState.searchResults.isEmpty && _barcodeController.text.trim().length > 1) {
       return const Center(child: Padding(
         padding: EdgeInsets.all(24.0),
         child: Text("No se encontraron productos.", style: TextStyle(color: Colors.grey)),
@@ -442,7 +434,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     return InkWell(
       onTap: () {
         if (mounted) {
-          context.read<ScannerProvider>().resetScanner();
+          ref.read(scannerProvider.notifier).resetScanner();
           Routes.navigateTo(context, Routes.order).then((_) {
             if(mounted) setState(() => _currentBottomNavIndex = 0);
           });
@@ -470,29 +462,29 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
   }
 
   Widget _buildOfflineIndicator() {
-    return Selector<AppStateProvider, ConnectionStatus>(
-        selector: (_, provider) => provider.connectionStatus,
-        builder: (context, status, _) {
-          if (status == ConnectionStatus.offline) {
-            return Container( color: Colors.orange.shade800, padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 16), child: const Row( mainAxisAlignment: MainAxisAlignment.center, children: [ Icon( Icons.wifi_off, color: Colors.white, size: 14,), SizedBox(width: 8), Text( 'Modo sin conexión', style: TextStyle( color: Colors.white, fontSize: 12,),), ], ), );
-          } else {
-            return const SizedBox.shrink();
-          }
+    return Consumer(
+      builder: (context, ref, _) {
+        final appStateValue = ref.watch(appStateNotifierProvider);
+        if (appStateValue.connectionStatus == ConnectionStatus.offline) {
+          return Container( color: Colors.orange.shade800, padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 16), child: const Row( mainAxisAlignment: MainAxisAlignment.center, children: [ Icon( Icons.wifi_off, color: Colors.white, size: 14,), SizedBox(width: 8), Text( 'Modo sin conexión', style: TextStyle( color: Colors.white, fontSize: 12,),), ], ), );
+        } else {
+          return const SizedBox.shrink();
         }
+      }
     );
   }
 
-  Widget _buildScannerViewContent(ScannerProvider scannerProvider, AppStateProvider appState) {
-    if (!mounted || scannerProvider.isDisposed) return const SizedBox.shrink();
+  Widget _buildScannerViewContent(ScannerState scannerState, AppState appStateValue) {
+    if (!mounted) return const SizedBox.shrink();
     if (_barcodeFocusNode.hasFocus) { return Center( child: Padding( padding: const EdgeInsets.all(32.0), child: Column( mainAxisAlignment: MainAxisAlignment.center, children: [ Icon(Icons.search, size: 80, color: Colors.grey.shade300), const SizedBox(height: 16), Text( 'Escriba para buscar productos por nombre o SKU.', textAlign: TextAlign.center, style: TextStyle(fontSize: 16, color: Colors.grey.shade600), ), ], ), ), ); }
-    if (!appState.isAppConfigured) { return Center( child: Padding( padding: const EdgeInsets.all(32.0), child: Column( mainAxisAlignment: MainAxisAlignment.center, children: [ Icon(Icons.settings_applications_outlined, size: 80, color: Colors.grey.shade400), const SizedBox(height: 24), const Text( 'Configuración Requerida', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500), textAlign: TextAlign.center,), const SizedBox(height: 12), Text( 'Usa el botón "+" y luego "Ajustes" para configurar la conexión con tu tienda WooCommerce.', style: TextStyle(fontSize: 14, color: Colors.grey.shade700), textAlign: TextAlign.center, ), ], ), ), ); }
-    switch (scannerProvider.state) {
+    if (!appStateValue.isAppConfigured) { return Center( child: Padding( padding: const EdgeInsets.all(32.0), child: Column( mainAxisAlignment: MainAxisAlignment.center, children: [ Icon(Icons.settings_applications_outlined, size: 80, color: Colors.grey.shade400), const SizedBox(height: 24), const Text( 'Configuración Requerida', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500), textAlign: TextAlign.center,), const SizedBox(height: 12), Text( 'Usa el botón "+" y luego "Ajustes" para configurar la conexión con tu tienda WooCommerce.', style: TextStyle(fontSize: 14, color: Colors.grey.shade700), textAlign: TextAlign.center, ), ], ), ), ); }
+    switch (scannerState.viewState) {
       case ScannerViewState.initial: return const _LoadingView(message: "Inicializando escáner...");
-      case ScannerViewState.scanning: return _ScannerView( scannerProvider: scannerProvider, onDetect: scannerProvider.handleBarcodeDetection, onError: scannerProvider.onScannerError, onManualCapture: scannerProvider.triggerManualCapture, );
+      case ScannerViewState.scanning: return _ScannerView( scannerState: scannerState, onDetect: ref.read(scannerProvider.notifier).handleBarcodeDetection, onError: ref.read(scannerProvider.notifier).onScannerError, onManualCapture: ref.read(scannerProvider.notifier).triggerManualCapture, );
       case ScannerViewState.processing: return const _LoadingView(message: "Procesando código...");
       case ScannerViewState.productFound: return const _LoadingView(message: "Producto encontrado...");
-      case ScannerViewState.noProduct: case ScannerViewState.error: return _ScannerErrorView( isNoProduct: scannerProvider.state == ScannerViewState.noProduct, errorMessage: scannerProvider.errorMessage ?? "Error del escáner.", onRetry: () => _clearSearchAndResetScanner() );
-      case ScannerViewState.awaitingActivation: default: return _ScannerActivationView(onActivateScan: scannerProvider.activateManualScan, onManualEntry: () => _showManualBarcodeDialog(context));
+      case ScannerViewState.noProduct: case ScannerViewState.error: return _ScannerErrorView( isNoProduct: scannerState.viewState == ScannerViewState.noProduct, errorMessage: scannerState.errorMessage ?? "Error del escáner.", onRetry: () => _clearSearchAndResetScanner() );
+      case ScannerViewState.awaitingActivation: default: return _ScannerActivationView(onActivateScan: ref.read(scannerProvider.notifier).activateManualScan, onManualEntry: () => _showManualBarcodeDialog(context));
     }
   }
 
@@ -609,14 +601,14 @@ class _ScannerActivationView extends StatelessWidget {
   }
 }
 
-class _ScannerView extends StatelessWidget {
-  final ScannerProvider scannerProvider;
+class _ScannerView extends ConsumerWidget {
+  final ScannerState scannerState;
   final Function(BarcodeCapture) onDetect;
   final Function(MobileScannerException) onError;
   final VoidCallback? onManualCapture;
 
   const _ScannerView({
-    required this.scannerProvider,
+    required this.scannerState,
     required this.onDetect,
     required this.onError,
     this.onManualCapture,
@@ -624,11 +616,9 @@ class _ScannerView extends StatelessWidget {
   }) : super(key: key);
 
   @override
-  Widget build(BuildContext context) {
-    if (scannerProvider.isDisposed) {
-      return const Center(child: Text("Scanner no disponible."));
-    }
-    final scannerController = scannerProvider.scannerService.controller;
+  Widget build(BuildContext context, WidgetRef ref) {
+    final scannerNotifier = ref.read(scannerProvider.notifier);
+    final scannerController = scannerNotifier.scannerService.controller;
 
     return Stack(
       alignment: Alignment.center,
@@ -640,7 +630,7 @@ class _ScannerView extends StatelessWidget {
               key: const ValueKey('mobile-scanner-widget'),
               controller: scannerController,
               onDetect: onDetect,
-              errorBuilder: (context, error, child) {
+              errorBuilder: (context, error) {
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   if (context.mounted) onError(error);
                 });
@@ -672,9 +662,9 @@ class _ScannerView extends StatelessWidget {
           top: 16,
           left: 16,
           right: 16,
-          child: _buildCaptureModeToggle(context, scannerProvider),
+          child: _buildCaptureModeToggle(context, ref),
         ),
-        if (scannerProvider.isManualCaptureMode)
+        if (scannerState.isManualCaptureMode)
           Positioned(
             bottom: 20,
             child: ElevatedButton.icon(
@@ -697,14 +687,14 @@ class _ScannerView extends StatelessWidget {
             children: [
               FloatingActionButton.small(
                 heroTag: 'scannerTorchFAB_ScannerView',
-                onPressed: () { if (!scannerProvider.isDisposed) scannerProvider.toggleTorch(); },
+                onPressed: () { scannerNotifier.toggleTorch(); },
                 backgroundColor: Colors.black.withOpacity(0.5),
-                child: Icon(scannerProvider.isTorchOn ? Icons.flash_on : Icons.flash_off, color: Colors.white),
+                child: Icon(scannerState.isTorchOn ? Icons.flash_on : Icons.flash_off, color: Colors.white),
               ),
               const SizedBox(height: 8),
               FloatingActionButton.small(
                 heroTag: 'scannerCameraSwitchFAB_ScannerView',
-                onPressed: () { if (!scannerProvider.isDisposed) scannerController.switchCamera(); },
+                onPressed: () { scannerController.switchCamera(); },
                 backgroundColor: Colors.black.withOpacity(0.5),
                 child: const Icon(Icons.cameraswitch_outlined, color: Colors.white),
               ),
@@ -723,9 +713,7 @@ class _ScannerView extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             ),
             onPressed: () {
-              if (!scannerProvider.isDisposed) {
-                scannerProvider.resetScanner();
-              }
+              scannerNotifier.resetScanner();
             },
           ),
         ),
@@ -733,7 +721,10 @@ class _ScannerView extends StatelessWidget {
     );
   }
 
-  Widget _buildCaptureModeToggle(BuildContext context, ScannerProvider scannerProvider) {
+  Widget _buildCaptureModeToggle(BuildContext context, WidgetRef ref) {
+    final scannerState = ref.watch(scannerProvider);
+    final scannerNotifier = ref.read(scannerProvider.notifier);
+
     return SegmentedButton<bool>(
       style: SegmentedButton.styleFrom(
         foregroundColor: Theme.of(context).primaryColor,
@@ -746,9 +737,9 @@ class _ScannerView extends StatelessWidget {
         ButtonSegment<bool>(value: false, label: Text('Automático')),
         ButtonSegment<bool>(value: true, label: Text('Manual')),
       ],
-      selected: {scannerProvider.isManualCaptureMode},
+      selected: {scannerState.isManualCaptureMode},
       onSelectionChanged: (Set<bool> newSelection) {
-        scannerProvider.setManualCaptureMode(newSelection.first);
+        scannerNotifier.setManualCaptureMode(newSelection.first);
       },
     );
   }

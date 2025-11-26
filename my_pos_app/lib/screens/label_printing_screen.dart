@@ -1,29 +1,30 @@
 // lib/screens/label_printing_screen.dart
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:collection/collection.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/product.dart' as app_product;
 import '../models/label_print_item.dart';
-import '../providers/label_provider.dart';
-import '../providers/scanner_provider.dart';
+import '../providers/label_notifier.dart';
+import '../providers/scanner_notifier.dart';
+import '../providers/scanner_state.dart';
 import '../widgets/app_header.dart';
 import '../widgets/quantity_selector.dart';
 import '../repositories/product_repository.dart';
 import '../locator.dart';
 import '../config/routes.dart';
-import '../services/woocommerce_service.dart';
 
-class LabelPrintingScreen extends StatefulWidget {
-  const LabelPrintingScreen({Key? key}) : super(key: key);
+/// ✓ FASE 2 RIVERPOD: Migrado a ConsumerStatefulWidget
+class LabelPrintingScreen extends ConsumerStatefulWidget {
+  const LabelPrintingScreen({super.key});
 
   @override
-  State<LabelPrintingScreen> createState() => _LabelPrintingScreenState();
+  ConsumerState<LabelPrintingScreen> createState() => _LabelPrintingScreenState();
 }
 
-class _LabelPrintingScreenState extends State<LabelPrintingScreen> {
+class _LabelPrintingScreenState extends ConsumerState<LabelPrintingScreen> {
   final TextEditingController _productSearchController = TextEditingController();
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
   final ScrollController _scrollController = ScrollController();
@@ -41,17 +42,16 @@ class _LabelPrintingScreenState extends State<LabelPrintingScreen> {
 
   List<app_product.Product> _availableVariations = [];
 
-  late LabelProvider _labelProvider;
-
   @override
   void initState() {
     super.initState();
-    _labelProvider = context.read<LabelProvider>();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        context.read<ScannerProvider>().clearSearch();
-        _labelProvider.addListener(_onEditingStateChanged);
+        ref.read(scannerProvider.notifier).clearSearch();
+        ref.listenManual(labelProvider, (previous, next) {
+          _onEditingStateChanged();
+        });
         _onEditingStateChanged();
       }
     });
@@ -66,7 +66,6 @@ class _LabelPrintingScreenState extends State<LabelPrintingScreen> {
 
   @override
   void dispose() {
-    _labelProvider.removeListener(_onEditingStateChanged);
     _productSearchController.removeListener(_onSearchChanged);
     _productSearchController.dispose();
     _scrollController.dispose();
@@ -77,13 +76,14 @@ class _LabelPrintingScreenState extends State<LabelPrintingScreen> {
 
   void _onEditingStateChanged() {
     if (!mounted) return;
-    final itemToEdit = _labelProvider.itemBeingEdited;
-    final isProductAlreadyInForm = (_selectedProduct?.id == itemToEdit?.productId && _labelProvider.editingItemId == itemToEdit?.id);
+    final labelState = ref.read(labelProvider);
+    final itemToEdit = labelState.itemBeingEdited;
+    final isProductAlreadyInForm = (_selectedProduct?.id == itemToEdit?.productId && labelState.editingItemId == itemToEdit?.id);
 
     if (itemToEdit != null && !isProductAlreadyInForm) {
       _loadItemForEditing(itemToEdit);
     } else if (itemToEdit == null && _selectedProduct != null) {
-      if (_labelProvider.editingItemId == null) {
+      if (labelState.editingItemId == null) {
         _resetForm(keepSelectedProduct: false);
       }
     }
@@ -103,9 +103,9 @@ class _LabelPrintingScreenState extends State<LabelPrintingScreen> {
       if (mounted) {
         final searchTerm = _productSearchController.text;
         if (searchTerm.length > 1) {
-          context.read<ScannerProvider>().performSearch(searchTerm);
+          ref.read(scannerProvider.notifier).performSearch(searchTerm);
         } else {
-          context.read<ScannerProvider>().clearSearch();
+          ref.read(scannerProvider.notifier).clearSearch();
         }
       }
     });
@@ -120,14 +120,14 @@ class _LabelPrintingScreenState extends State<LabelPrintingScreen> {
       _resolvedVariant = null;
       _selectedAttributes.clear();
       _availableVariations.clear();
-      if (context.read<LabelProvider>().itemBeingEdited != null) {
-        context.read<LabelProvider>().cancelEditing();
+      if (ref.read(labelProvider).itemBeingEdited != null) {
+        ref.read(labelProvider.notifier).cancelEditing();
       }
 
       if (!keepSelectedProduct) {
         _selectedProduct = null;
         _productSearchController.clear();
-        context.read<ScannerProvider>().clearSearch();
+        ref.read(scannerProvider.notifier).clearSearch();
         _showSearchResults = false;
       } else if (_selectedProduct != null && _selectedProduct!.isVariable) {
         if (_selectedProduct!.fullAttributesWithOptions != null) {
@@ -143,7 +143,7 @@ class _LabelPrintingScreenState extends State<LabelPrintingScreen> {
   Future<void> _selectProduct(app_product.Product product) async {
     if (!mounted) return;
     _productSearchFocusNode.unfocus();
-    context.read<ScannerProvider>().clearSearch();
+    ref.read(scannerProvider.notifier).clearSearch();
 
     _productSearchController.removeListener(_onSearchChanged);
     setState(() {
@@ -306,7 +306,7 @@ class _LabelPrintingScreenState extends State<LabelPrintingScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error al cargar para editar: $e"), backgroundColor: Colors.red));
-      _labelProvider.cancelEditing();
+      ref.read(labelProvider.notifier).cancelEditing();
     }
   }
 
@@ -332,19 +332,23 @@ class _LabelPrintingScreenState extends State<LabelPrintingScreen> {
       });
     }
 
-    final isEditing = _labelProvider.itemBeingEdited != null;
+    final labelState = ref.read(labelProvider);
+    final isEditing = labelState.itemBeingEdited != null;
     final item = LabelPrintItem(
-      id: _labelProvider.editingItemId ?? const Uuid().v4(),
+      id: labelState.editingItemId ?? const Uuid().v4(),
       productId: _selectedProduct!.id,
       resolvedVariantId: _resolvedVariant?.id,
       quantity: _quantity,
       selectedVariants: friendlySelectedVariants,
       barcode: _resolvedVariant?.barcode ?? _selectedProduct!.barcode ?? _resolvedVariant?.sku ?? _selectedProduct!.sku,
+      // ⚡ Almacenar en caché para carga rápida
+      cachedProductName: _resolvedVariant?.name ?? _selectedProduct!.name,
+      cachedSku: _resolvedVariant?.sku ?? _selectedProduct!.sku,
       product: _selectedProduct,
       resolvedVariant: _resolvedVariant,
     );
 
-    _labelProvider.addOrUpdateItem(item);
+    ref.read(labelProvider.notifier).addOrUpdateItem(item);
     final message = isEditing ? "'${item.displayName}' actualizado." : "'${item.displayName}' añadido a la cola.";
 
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -360,7 +364,7 @@ class _LabelPrintingScreenState extends State<LabelPrintingScreen> {
 
   void _duplicateItem(LabelPrintItem item) {
     if (!mounted) return;
-    context.read<LabelProvider>().duplicateAndPrepareForEditing(item.id!);
+    ref.read(labelProvider.notifier).duplicateAndPrepareForEditing(item.id!);
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text("'${item.displayName}' cargado para editar."),
       backgroundColor: Colors.blueAccent,
@@ -371,21 +375,22 @@ class _LabelPrintingScreenState extends State<LabelPrintingScreen> {
   }
 
   void _navigateToThermalScreen() {
-    if (_labelProvider.printQueue.isEmpty) {
+    final labelState = ref.read(labelProvider);
+    if (labelState.printQueue.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Añada productos a la cola antes de imprimir."), backgroundColor: Colors.orange));
       return;
     }
-    Navigator.pushNamed(context, Routes.thermalPrinting, arguments: _labelProvider.printQueue)
+    Navigator.pushNamed(context, Routes.thermalPrinting, arguments: labelState.printQueue)
         .then((printedSuccessfully) {
       if (printedSuccessfully == true && mounted) {
-        context.read<LabelProvider>().clearQueue();
+        ref.read(labelProvider.notifier).clearQueue();
       }
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    final scannerProvider = context.watch<ScannerProvider>();
+    final scannerState = ref.watch(scannerProvider);
     final isKeyboardVisible = MediaQuery.of(context).viewInsets.bottom > 0;
 
     return GestureDetector(
@@ -403,7 +408,7 @@ class _LabelPrintingScreenState extends State<LabelPrintingScreen> {
             controller: _scrollController,
             padding: EdgeInsets.fromLTRB(16, 16, 16, 120 + MediaQuery.of(context).padding.bottom),
             children: [
-              _buildProductSelectionCard(scannerProvider),
+              _buildProductSelectionCard(scannerState),
               const SizedBox(height: 20),
               _buildPrintQueueCard(),
             ],
@@ -415,9 +420,10 @@ class _LabelPrintingScreenState extends State<LabelPrintingScreen> {
   }
 
 
-  Widget _buildProductSelectionCard(ScannerProvider scannerProvider) {
+  Widget _buildProductSelectionCard(ScannerState scannerState) {
     final theme = Theme.of(context);
-    final isEditing = _labelProvider.itemBeingEdited != null;
+    final labelState = ref.watch(labelProvider);
+    final isEditing = labelState.itemBeingEdited != null;
     return Card(
       elevation: 2,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -434,13 +440,13 @@ class _LabelPrintingScreenState extends State<LabelPrintingScreen> {
               decoration: InputDecoration(
                   hintText: "Buscar producto por nombre o SKU...",
                   prefixIcon: const Icon(Icons.search),
-                  suffixIcon: scannerProvider.isSearching
+                  suffixIcon: scannerState.isSearching
                       ? const Padding(padding: EdgeInsets.all(12.0), child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)))
                       : (_productSearchController.text.isNotEmpty ? IconButton(icon: const Icon(Icons.clear), onPressed: () => _resetForm(keepSelectedProduct: false)) : null)
               ),
             ),
-            if (_showSearchResults && scannerProvider.searchResults.isNotEmpty)
-              _buildSearchResults(scannerProvider.searchResults),
+            if (_showSearchResults && scannerState.searchResults.isNotEmpty)
+              _buildSearchResults(scannerState.searchResults),
 
             if (!_showSearchResults) ...[
               if (_isLoadingProductDetails)
@@ -458,6 +464,7 @@ class _LabelPrintingScreenState extends State<LabelPrintingScreen> {
 
   Widget _buildPrintQueueCard() {
     final theme = Theme.of(context);
+    final labelState = ref.watch(labelProvider);
     return Card(
       elevation: 2,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -466,18 +473,18 @@ class _LabelPrintingScreenState extends State<LabelPrintingScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text("Cola de Impresión (${_labelProvider.printQueue.length})", style: theme.textTheme.titleLarge?.copyWith(fontSize: 18, fontWeight: FontWeight.bold)),
+            Text("Cola de Impresión (${labelState.printQueue.length})", style: theme.textTheme.titleLarge?.copyWith(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
-            if (_labelProvider.printQueue.isEmpty)
+            if (labelState.printQueue.isEmpty)
               const Center(child: Padding(padding: EdgeInsets.all(24.0), child: Text("La cola está vacía.")))
             else
               ListView.builder(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
-                itemCount: _labelProvider.printQueue.length,
+                itemCount: labelState.printQueue.length,
                 itemBuilder: (context, index) {
-                  final item = _labelProvider.printQueue[index];
-                  final isCurrentlyEditingThis = _labelProvider.editingItemId == item.id;
+                  final item = labelState.printQueue[index];
+                  final isCurrentlyEditingThis = labelState.editingItemId == item.id;
                   return Card(
                     margin: const EdgeInsets.symmetric(vertical: 4),
                     color: isCurrentlyEditingThis ? Colors.blue.shade50 : null,
@@ -489,8 +496,8 @@ class _LabelPrintingScreenState extends State<LabelPrintingScreen> {
                         children: [
                           Text("x${item.quantity}", style: const TextStyle(fontWeight: FontWeight.bold)),
                           IconButton(icon: const Icon(Icons.copy_all_outlined, color: Colors.blueGrey, size: 20), tooltip: "Duplicar", onPressed: () => _duplicateItem(item)),
-                          IconButton(icon: const Icon(Icons.edit_outlined, color: Colors.blueGrey, size: 20), tooltip: "Editar", onPressed: () => _labelProvider.startEditing(item.id!)),
-                          IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red, size: 22), tooltip: "Eliminar", onPressed: () => _labelProvider.removeItem(item.id!)),
+                          IconButton(icon: const Icon(Icons.edit_outlined, color: Colors.blueGrey, size: 20), tooltip: "Editar", onPressed: () => ref.read(labelProvider.notifier).startEditing(item.id!)),
+                          IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red, size: 22), tooltip: "Eliminar", onPressed: () => ref.read(labelProvider.notifier).removeItem(item.id!)),
                         ],
                       ),
                     ),
@@ -569,7 +576,7 @@ class _LabelPrintingScreenState extends State<LabelPrintingScreen> {
         if (isEditing)
           TextButton(
               onPressed: () {
-                _labelProvider.cancelEditing();
+                ref.read(labelProvider.notifier).cancelEditing();
                 _resetForm(keepSelectedProduct: false);
               },
               child: const Text("Cancelar Edición"))
@@ -618,9 +625,9 @@ class _LabelPrintingScreenState extends State<LabelPrintingScreen> {
 
   Widget _buildBottomActionBar() {
     final theme = Theme.of(context);
-    final labelProvider = context.watch<LabelProvider>();
+    final labelState = ref.watch(labelProvider);
     final bool isEnabled =
-        !labelProvider.printQueue.isEmpty && !labelProvider.isPrinting;
+        labelState.printQueue.isNotEmpty && !labelState.isPrinting;
     return Container(
       padding: EdgeInsets.fromLTRB(16, 12, 16,
           16 + MediaQuery.of(context).padding.bottom * 0.5),
@@ -638,7 +645,7 @@ class _LabelPrintingScreenState extends State<LabelPrintingScreen> {
               child: OutlinedButton(
                   onPressed: isEnabled
                       ? () {
-                    context.read<LabelProvider>().clearQueue();
+                    ref.read(labelProvider.notifier).clearQueue();
                     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                         content: Text("Cola de impresión limpiada.")));
                   }
@@ -648,7 +655,7 @@ class _LabelPrintingScreenState extends State<LabelPrintingScreen> {
           Expanded(
             flex: 2,
             child: ElevatedButton.icon(
-              icon: labelProvider.isPrinting
+              icon: labelState.isPrinting
                   ? const SizedBox(
                   width: 18,
                   height: 18,
@@ -656,7 +663,7 @@ class _LabelPrintingScreenState extends State<LabelPrintingScreen> {
                       color: Colors.white, strokeWidth: 2))
                   : const Icon(Icons.print_outlined),
               label: Text(
-                  labelProvider.isPrinting ? "Procesando..." : "PROCEDER A IMPRIMIR"),
+                  labelState.isPrinting ? "Procesando..." : "PROCEDER A IMPRIMIR"),
               onPressed: isEnabled ? _navigateToThermalScreen : null,
               style: ElevatedButton.styleFrom(
                 padding: const EdgeInsets.symmetric(vertical: 14),

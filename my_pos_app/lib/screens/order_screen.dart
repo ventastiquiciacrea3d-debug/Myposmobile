@@ -1,27 +1,23 @@
 // lib/screens/order_screen.dart
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter_slidable/flutter_slidable.dart';
-import 'package:collection/collection.dart';
 
 import '../models/order.dart' show Order, OrderItem, StringExtension;
 import '../models/product.dart' as app_product;
-import '../providers/customer_provider.dart';
-import '../providers/order_provider.dart';
-import '../providers/app_state_provider.dart';
-import '../repositories/product_repository.dart';
-import '../locator.dart';
+import '../models/ui_state.dart';
+import '../providers/customer_notifier.dart';
+import '../providers/order_notifier.dart';
+import '../providers/order_history_notifier.dart';
+import '../providers/app_state_notifier.dart';
 
 import '../widgets/app_header.dart';
 import '../widgets/dial_floating_action_button.dart';
 import '../widgets/custom_fab_location.dart';
 import '../config/constants.dart';
 import '../config/routes.dart';
-import 'customer_edit_screen.dart';
 import '../utils/pdf_generator.dart';
 
 import '../widgets/order/current_order_item_card.dart';
@@ -103,13 +99,13 @@ class DisplayVariantSelection {
 }
 
 
-class OrderScreen extends StatefulWidget {
+class OrderScreen extends ConsumerStatefulWidget {
   const OrderScreen({super.key});
   @override
-  State<OrderScreen> createState() => _OrderScreenState();
+  ConsumerState<OrderScreen> createState() => _OrderScreenState();
 }
 
-class _OrderScreenState extends State<OrderScreen> with TickerProviderStateMixin {
+class _OrderScreenState extends ConsumerState<OrderScreen> with TickerProviderStateMixin {
   final currencyFormat = NumberFormat.currency(locale: 'es_CR', symbol: '₡');
   final dateTimeFormat = DateFormat('dd/MM/yyyy HH:mm', 'es_CR');
   final shortDateFormat = DateFormat('dd/MM/yyyy', 'es_CR');
@@ -198,8 +194,7 @@ class _OrderScreenState extends State<OrderScreen> with TickerProviderStateMixin
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       try {
-        context.read<OrderProvider>().addListener(_onOrderOrCustomerChange);
-        context.read<OrderProvider>().getOrderHistory(refresh: true);
+        ref.read(orderHistoryProvider.notifier).getOrderHistory(refresh: true);
       } catch (e) {
         debugPrint("[OrderScreen] Error adding listener or loading data: $e");
       }
@@ -227,12 +222,12 @@ class _OrderScreenState extends State<OrderScreen> with TickerProviderStateMixin
   }
 
   void _onHistoryScroll() {
-    final provider = context.read<OrderProvider>();
+    final historyState = ref.read(orderHistoryProvider);
     if (_historyScrollController.position.pixels >= _historyScrollController.position.maxScrollExtent - 300 &&
-        provider.historyCanLoadMore &&
-        !provider.historyIsLoadingMore &&
-        !provider.historyIsLoading) {
-      provider.getOrderHistory(
+        historyState.canLoadMore &&
+        !historyState.isLoadingMore &&
+        !historyState.isLoading) {
+      ref.read(orderHistoryProvider.notifier).getOrderHistory(
         searchTerm: _searchHistoryController.text.trim(),
         status: _selectedStatusFilter,
       );
@@ -243,7 +238,7 @@ class _OrderScreenState extends State<OrderScreen> with TickerProviderStateMixin
     _searchDebounce?.cancel();
     _searchDebounce = Timer(const Duration(milliseconds: 500), () {
       if (mounted) {
-        context.read<OrderProvider>().getOrderHistory(
+        ref.read(orderHistoryProvider.notifier).getOrderHistory(
           searchTerm: _searchHistoryController.text.trim(),
           status: _selectedStatusFilter,
           refresh: true,
@@ -273,9 +268,7 @@ class _OrderScreenState extends State<OrderScreen> with TickerProviderStateMixin
 
   @override
   void dispose() {
-    try {
-      context.read<OrderProvider>().removeListener(_onOrderOrCustomerChange);
-    } catch(e) { debugPrint("[OrderScreen] Error removing listener in dispose: $e");}
+    // ✓ FASE 1 RIVERPOD: Ya no necesitamos removeListener con Riverpod
     _tabController.removeListener(_handleTabChange);
     _tabController.dispose();
     _searchHistoryController.removeListener(_onHistorySearchChanged);
@@ -290,9 +283,9 @@ class _OrderScreenState extends State<OrderScreen> with TickerProviderStateMixin
 
   Future<void> _deleteOrderItem(OrderItem item) async {
     if (!mounted) return;
-    final orderProvider = context.read<OrderProvider>();
+    final orderNotifier = ref.read(currentOrderProvider.notifier);
     String uniqueItemId = item.variationId != null ? '${item.productId}_${item.variationId}' : item.productId;
-    await orderProvider.removeItem(uniqueItemId);
+    await orderNotifier.removeItem(uniqueItemId);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Producto "${item.name}" eliminado del pedido.'), backgroundColor: Colors.red),
@@ -302,9 +295,9 @@ class _OrderScreenState extends State<OrderScreen> with TickerProviderStateMixin
 
   Future<void> _duplicateOrderItem(OrderItem item) async {
     if (!mounted) return;
-    final orderProvider = context.read<OrderProvider>();
+    final orderNotifier = ref.read(currentOrderProvider.notifier);
     String uniqueItemId = item.variationId != null ? '${item.productId}_${item.variationId!}' : item.productId;
-    await orderProvider.duplicateOrderItem(uniqueItemId);
+    await orderNotifier.duplicateOrderItem(uniqueItemId);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Producto "${item.name}" duplicado en el pedido.'), backgroundColor: Colors.blueGrey),
@@ -313,42 +306,51 @@ class _OrderScreenState extends State<OrderScreen> with TickerProviderStateMixin
   }
 
   Future<void> _updateOrderStatus(BuildContext buildContext, Order order, String newStatus, {bool isFromHistory = false}) async {
-    final orderProvider = Provider.of<OrderProvider>(buildContext, listen: false);
+    final orderNotifier = ref.read(currentOrderProvider.notifier);
     final String displayOrderId = order.number ?? (order.id != null && order.id!.length > 6 ? order.id!.substring(0, 6) : order.id ?? "N/A");
 
     if (order.id == null || order.id!.startsWith('local_') || order.id == hiveCurrentOrderPendingKey) {
-      bool localUpdateSuccess = await orderProvider.updateOrderStatus(order.id ?? hiveCurrentOrderPendingKey, newStatus);
+      bool localUpdateSuccess = await orderNotifier.updateOrderStatus(order.id ?? hiveCurrentOrderPendingKey, newStatus);
       if(localUpdateSuccess && mounted){
         ScaffoldMessenger.of(buildContext).showSnackBar(SnackBar(content: Text('Estado del pedido local #${order.id?.substring(0,6) ?? "Actual"} actualizado a "$newStatus".'), backgroundColor: Colors.blueGrey));
-        if(isFromHistory) await orderProvider.getOrderHistory(refresh: true);
+        if(isFromHistory) await ref.read(orderHistoryProvider.notifier).getOrderHistory(refresh: true);
         setState((){});
       } else if(mounted) {
-        ScaffoldMessenger.of(buildContext).showSnackBar(SnackBar(content: Text(orderProvider.errorMessage ?? 'No se pudo actualizar el estado local.'), backgroundColor: Colors.red));
+        final currentState = ref.read(currentOrderProvider);
+        final error = currentState.maybeWhen(data: (state) => state.error, orElse: () => null);
+        ScaffoldMessenger.of(buildContext).showSnackBar(SnackBar(content: Text(error ?? 'No se pudo actualizar el estado local.'), backgroundColor: Colors.red));
       }
       return;
     }
 
     showDialog(context: buildContext, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
 
-    bool success = await orderProvider.updateOrderStatus(order.id!, newStatus);
+    bool success = await orderNotifier.updateOrderStatus(order.id!, newStatus);
 
     if (mounted) {
       if (Navigator.of(buildContext, rootNavigator: true).canPop()) Navigator.of(buildContext, rootNavigator: true).pop();
 
       if (success) {
-        await orderProvider.getOrderHistory(refresh: true);
+        await ref.read(orderHistoryProvider.notifier).getOrderHistory(refresh: true);
         setState(() {});
         ScaffoldMessenger.of(buildContext).showSnackBar(SnackBar(content: Text('Estado de Pedido #$displayOrderId actualizado a "${_getStatusText(newStatus)}".'), backgroundColor: Colors.green));
       } else {
-        ScaffoldMessenger.of(buildContext).showSnackBar(SnackBar(content: Text(orderProvider.errorMessage ?? 'No se pudo actualizar el estado.'), backgroundColor: Colors.red));
+        final currentState = ref.read(currentOrderProvider);
+        final error = currentState.maybeWhen(data: (state) => state.error, orElse: () => null);
+        ScaffoldMessenger.of(buildContext).showSnackBar(SnackBar(content: Text(error ?? 'No se pudo actualizar el estado.'), backgroundColor: Colors.red));
       }
     }
   }
 
-  Future<void> _showSaveOrderConfirmationDialog(BuildContext context, OrderProvider orderProvider) async {
+  Future<void> _showSaveOrderConfirmationDialog(BuildContext context) async {
     final scaffoldMessenger = ScaffoldMessenger.of(context);
+    final currentState = ref.read(currentOrderProvider);
+    final currentOrder = currentState.maybeWhen(
+      data: (state) => state.order,
+      orElse: () => null,
+    );
 
-    if (orderProvider.currentOrder == null || orderProvider.currentOrder!.items.isEmpty) {
+    if (currentOrder == null || currentOrder.items.isEmpty) {
       scaffoldMessenger.showSnackBar(const SnackBar(content: Text('No hay productos en el pedido'), backgroundColor: Colors.orange));
       return;
     }
@@ -375,18 +377,19 @@ class _OrderScreenState extends State<OrderScreen> with TickerProviderStateMixin
     );
 
     if (confirmed == true && mounted) {
-      await _saveOrder(context, orderProvider, defaultFinalStatus);
+      await _saveOrder(context, defaultFinalStatus);
     }
   }
 
-  Future<void> _saveOrder(BuildContext buildContext, OrderProvider orderProvider, String finalStatus) async {
+  Future<void> _saveOrder(BuildContext buildContext, String finalStatus) async {
+    final orderNotifier = ref.read(currentOrderProvider.notifier);
     final scaffoldMessenger = ScaffoldMessenger.of(buildContext);
     showDialog(context: buildContext, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
 
     String? resultId; String? finalMessage; Color? finalColor;
 
     try {
-      resultId = await orderProvider.saveOrder(finalStatus: finalStatus);
+      resultId = await orderNotifier.saveOrder(finalStatus: finalStatus);
       final bool savedLocally = resultId != null && resultId.startsWith('local_');
 
       if (savedLocally) {
@@ -396,14 +399,16 @@ class _OrderScreenState extends State<OrderScreen> with TickerProviderStateMixin
         finalMessage = 'Pedido guardado exitosamente en el servidor.';
         finalColor = Colors.green;
       } else {
-        finalMessage = orderProvider.errorMessage ?? 'Error desconocido al guardar el pedido.';
+        final currentState = ref.read(currentOrderProvider);
+        final error = currentState.maybeWhen(data: (state) => state.error, orElse: () => null);
+        finalMessage = error ?? 'Error desconocido al guardar el pedido.';
         finalColor = Colors.red;
       }
 
       if (resultId != null && mounted) {
-        await orderProvider.getOrderHistory(refresh: true);
+        await ref.read(orderHistoryProvider.notifier).getOrderHistory(refresh: true);
         if(!savedLocally) _tabController.animateTo(1);
-        context.read<CustomerProvider>().clearSelectedCustomer();
+        ref.read(customerProvider.notifier).clearSelectedCustomer();
       }
 
     } on ApiException catch (e) { if (mounted) { finalMessage = e.message; finalColor = Colors.red; }
@@ -428,8 +433,8 @@ class _OrderScreenState extends State<OrderScreen> with TickerProviderStateMixin
 
   Future<void> _loadOrderForEditing(BuildContext context, Order order) async {
     if (!mounted) return;
-    final orderProvider = context.read<OrderProvider>();
-    await orderProvider.loadOrderForEditing(order);
+    final orderNotifier = ref.read(currentOrderProvider.notifier);
+    await orderNotifier.loadOrderForEditing(order);
     _tabController.animateTo(0);
   }
 
@@ -444,7 +449,7 @@ class _OrderScreenState extends State<OrderScreen> with TickerProviderStateMixin
 
 
   void _handleMoreOptionsForHistoryItem(BuildContext context, Order order) {
-    final orderProvider = context.read<OrderProvider>();
+    final orderNotifier = ref.read(currentOrderProvider.notifier);
     showModalBottomSheet(
       context: context,
       builder: (ctx) => Wrap(
@@ -454,7 +459,7 @@ class _OrderScreenState extends State<OrderScreen> with TickerProviderStateMixin
             title: const Text('Duplicar Pedido'),
             onTap: () async {
               Navigator.pop(ctx);
-              await orderProvider.duplicateOrder(order);
+              await orderNotifier.duplicateOrder(order);
               _tabController.animateTo(0);
             },
           ),
@@ -511,7 +516,7 @@ class _OrderScreenState extends State<OrderScreen> with TickerProviderStateMixin
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     bool canPopOrderScreen = Navigator.canPop(context);
-    final appState = context.watch<AppStateProvider>();
+    final appState = ref.watch(appStateNotifierProvider);
 
     return Scaffold(
       resizeToAvoidBottomInset: false,
@@ -528,7 +533,24 @@ class _OrderScreenState extends State<OrderScreen> with TickerProviderStateMixin
       ),
       body: Column(
         children: [
-          Consumer<AppStateProvider>( builder: (context, appState, child) { if (appState.connectionStatus == ConnectionStatus.offline) { return Container( color: Colors.orange.shade800, padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 16), child: const Row( mainAxisAlignment: MainAxisAlignment.center, children: [ Icon(Icons.wifi_off_rounded, color: Colors.white, size: 14), SizedBox(width: 6), Text('Modo sin conexión', style: TextStyle(color: Colors.white, fontSize: 11.5, fontWeight: FontWeight.w500)) ] ) ); } return const SizedBox.shrink(); }, ),
+          Consumer(builder: (context, ref, child) {
+            final appState = ref.watch(appStateNotifierProvider);
+            if (!appState.isOnline) {
+              return Container(
+                color: Colors.orange.shade800,
+                padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 16),
+                child: const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.wifi_off_rounded, color: Colors.white, size: 14),
+                    SizedBox(width: 6),
+                    Text('Modo sin conexión', style: TextStyle(color: Colors.white, fontSize: 11.5, fontWeight: FontWeight.w500))
+                  ]
+                )
+              );
+            }
+            return const SizedBox.shrink();
+          }),
           Container(
             color: theme.canvasColor,
             child: TabBar(
@@ -544,8 +566,8 @@ class _OrderScreenState extends State<OrderScreen> with TickerProviderStateMixin
                   controller: _tabController,
                   children: [ _buildCurrentOrderTabWithStickyFooter(context), _buildOrderHistoryTab(context), ],
                 ),
-                if (appState.error != null) Align( alignment: Alignment.bottomCenter, child: MaterialBanner( padding: const EdgeInsets.all(10), content: Text(appState.error!, style: const TextStyle(color: Colors.white)), backgroundColor: Colors.red.shade700, actions: [ TextButton( child: const Text('CERRAR', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)), onPressed: () => context.read<AppStateProvider>().clearError(), ), ], ), )
-                else if (appState.notification != null) Align( alignment: Alignment.bottomCenter, child: MaterialBanner( padding: const EdgeInsets.all(10), content: Text(appState.notification!, style: const TextStyle(color: Colors.black87)), backgroundColor: Colors.blueGrey.shade100, actions: [ TextButton( child: const Text('CERRAR', style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold)), onPressed: () { context.read<AppStateProvider>().clearNotification(); }, ), ], ), ),
+                if (appState.appError != null) Align( alignment: Alignment.bottomCenter, child: MaterialBanner( padding: const EdgeInsets.all(10), content: Text(appState.appError!, style: const TextStyle(color: Colors.white)), backgroundColor: Colors.red.shade700, actions: [ TextButton( child: const Text('CERRAR', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)), onPressed: () => ref.read(appStateNotifierProvider.notifier).clearError(), ), ], ), )
+                else if (appState.appNotification != null) Align( alignment: Alignment.bottomCenter, child: MaterialBanner( padding: const EdgeInsets.all(10), content: Text(appState.appNotification!, style: const TextStyle(color: Colors.black87)), backgroundColor: Colors.blueGrey.shade100, actions: [ TextButton( child: const Text('CERRAR', style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold)), onPressed: () { ref.read(appStateNotifierProvider.notifier).clearNotification(); }, ), ], ), ),
               ],
             ),
           ),
@@ -561,32 +583,36 @@ class _OrderScreenState extends State<OrderScreen> with TickerProviderStateMixin
   }
 
   Widget _buildCurrentOrderTabWithStickyFooter(BuildContext context) {
-    return Consumer<OrderProvider>(
-      builder: (context, orderProvider, _) {
-        final order = orderProvider.currentOrder;
-        if (order == null || orderProvider.isLoading) {
-          return const Center(child: CircularProgressIndicator());
-        }
+    return Consumer(
+      builder: (context, ref, _) {
+        final orderState = ref.watch(currentOrderProvider);
 
-        return Column(
-          children: [
-            Expanded(
-              child: CustomScrollView(
-                slivers: [
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text("Pedido Actual", style: Theme.of(context).textTheme.titleLarge),
-                          InkWell(
-                            onTap: () async {
-                              final selectedCustomer = await Routes.navigateTo(context, Routes.customerSearch);
-                              if(selectedCustomer is Map<String, dynamic> && mounted){
-                                context.read<OrderProvider>().updateOrderCustomer(selectedCustomer['id'], selectedCustomer['name']);
-                              }
-                            },
+        return orderState.when(
+          data: (state) {
+            final order = state.order;
+            if (order == null) {
+              return const Center(child: CircularProgressIndicator());
+            }
+
+            return Column(
+              children: [
+                Expanded(
+                  child: CustomScrollView(
+                    slivers: [
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text("Pedido Actual", style: Theme.of(context).textTheme.titleLarge),
+                              InkWell(
+                                onTap: () async {
+                                  final selectedCustomer = await Routes.navigateTo(context, Routes.customerSearch);
+                                  if(selectedCustomer is Map<String, dynamic> && mounted){
+                                    ref.read(currentOrderProvider.notifier).updateOrderCustomer(selectedCustomer['id'], selectedCustomer['name']);
+                                  }
+                                },
                             borderRadius: BorderRadius.circular(8),
                             child: Padding(
                               padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
@@ -640,8 +666,21 @@ class _OrderScreenState extends State<OrderScreen> with TickerProviderStateMixin
                 ],
               ),
             ),
-            if (order.items.isNotEmpty) _buildBottomActionBar(context, order.total),
-          ],
+                if (order.items.isNotEmpty) _buildBottomActionBar(context, order.total),
+              ],
+            );
+          },
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (error, _) => Center(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Text(
+                'Error: $error',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.red),
+              ),
+            ),
+          ),
         );
       },
     );
@@ -670,7 +709,7 @@ class _OrderScreenState extends State<OrderScreen> with TickerProviderStateMixin
               ],
             ),
             ElevatedButton.icon(
-              onPressed: () => _showSaveOrderConfirmationDialog(context, context.read<OrderProvider>()),
+              onPressed: () => _showSaveOrderConfirmationDialog(context),
               icon: const Icon(Icons.save_alt_rounded),
               label: const Text("GUARDAR PEDIDO"),
               style: ElevatedButton.styleFrom(
@@ -684,39 +723,66 @@ class _OrderScreenState extends State<OrderScreen> with TickerProviderStateMixin
     );
   }
 
+  /// ✓ OPTIMIZADO: Usa Selector para evitar rebuilds innecesarios
   Widget _buildOrderHistoryTab(BuildContext context) {
-    final orderProvider = context.watch<OrderProvider>();
     final theme = Theme.of(context);
 
     return Column(
       children: [
         _buildHistoryFilters(context),
         Expanded(
-          child: (orderProvider.historyIsLoading && orderProvider.historyOrders.isEmpty)
-              ? const Center(child: CircularProgressIndicator())
-              : (orderProvider.historyError != null && orderProvider.historyOrders.isEmpty)
-              ? Center(child: Padding(padding: const EdgeInsets.all(20), child: Text(orderProvider.historyError!, textAlign: TextAlign.center, style: TextStyle(color: Colors.red.shade700))))
-              : (orderProvider.historyOrders.isEmpty)
-              ? const Center(child: Text("No se encontraron pedidos para los filtros aplicados."))
-              : RefreshIndicator(
-            onRefresh: () => orderProvider.getOrderHistory(
-              searchTerm: _searchHistoryController.text.trim(),
-              status: _selectedStatusFilter,
-              refresh: true,
-            ),
-            child: ListView.builder(
-              controller: _historyScrollController,
-              padding: const EdgeInsets.fromLTRB(8, 8, 8, 100),
-              itemCount: orderProvider.historyOrders.length + (orderProvider.historyIsLoadingMore ? 1 : 0),
-              itemBuilder: (ctx, index) {
-                if (index == orderProvider.historyOrders.length) {
-                  return const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 20),
-                    child: Center(child: CircularProgressIndicator()),
-                  );
-                }
+          // ✓ FASE 1 RIVERPOD: Consumer observa orderHistoryProvider
+          child: Consumer(
+            builder: (context, ref, _) {
+              final state = ref.watch(orderHistoryProvider);
 
-                final order = orderProvider.historyOrders[index];
+              // Estado de carga inicial
+              if (state.isLoading && state.orders.isEmpty) {
+                return const Center(child: CircularProgressIndicator());
+              }
+
+              // Estado de error inicial
+              if (state.error != null && state.orders.isEmpty) {
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Text(
+                      state.error!,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.red.shade700),
+                    ),
+                  ),
+                );
+              }
+
+              // Lista vacía
+              if (state.orders.isEmpty) {
+                return const Center(
+                  child: Text("No se encontraron pedidos para los filtros aplicados."),
+                );
+              }
+
+              // Lista con datos
+              return RefreshIndicator(
+                onRefresh: () => ref.read(orderHistoryProvider.notifier).getOrderHistory(
+                  searchTerm: _searchHistoryController.text.trim(),
+                  status: _selectedStatusFilter,
+                  refresh: true,
+                ),
+                child: ListView.builder(
+                  controller: _historyScrollController,
+                  padding: const EdgeInsets.fromLTRB(8, 8, 8, 100),
+                  itemCount: state.orders.length + (state.isLoadingMore ? 1 : 0),
+                  itemBuilder: (ctx, index) {
+                    // Indicador de carga al final
+                    if (index == state.orders.length) {
+                      return const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 20),
+                        child: Center(child: CircularProgressIndicator()),
+                      );
+                    }
+
+                    final order = state.orders[index];
                 final orderKey = order.id ?? 'local_${order.hashCode}';
                 _slidableControllers.putIfAbsent(orderKey, () => SlidableController(this));
 
@@ -741,15 +807,17 @@ class _OrderScreenState extends State<OrderScreen> with TickerProviderStateMixin
                       });
                     }
                   },
-                  statusTextBuilder: _getStatusText,
-                  statusColorBuilder: _getStatusColor,
-                  statusIconBuilder: _getIconForStatusValue,
-                );
-              },
-            ),
-          ),
+                    statusTextBuilder: _getStatusText,
+                    statusColorBuilder: _getStatusColor,
+                    statusIconBuilder: _getIconForStatusValue,
+                  );
+                },
+              ),
+            );
+          },
         ),
-      ],
+      ),
+    ],
     );
   }
 

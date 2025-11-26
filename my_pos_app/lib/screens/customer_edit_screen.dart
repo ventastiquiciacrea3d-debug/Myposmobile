@@ -1,17 +1,17 @@
 // lib/screens/customer_edit_screen.dart
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart'; // Para acceder a WooCommerceService
-import 'package:flutter/foundation.dart'; // Para kDebugMode
 import 'package:flutter/services.dart'; // Para input formatters
 import 'package:flutter_contacts/flutter_contacts.dart'; // Para acceder a contactos
 import 'package:permission_handler/permission_handler.dart'; // Para permisos
 
 import '../services/woocommerce_service.dart'; // Para el servicio y excepciones
 import '../widgets/app_header.dart'; // Widget de cabecera común
+import '../locator.dart'; // Para getIt<WooCommerceService>
 // import '../config/routes.dart'; // No se usa directamente para navegación desde aquí
 
+/// ✓ FASE 2 RIVERPOD: Migrado - usa getIt en lugar de context.read
 class CustomerEditScreen extends StatefulWidget {
-  const CustomerEditScreen({Key? key}) : super(key: key);
+  const CustomerEditScreen({super.key});
 
   @override
   State<CustomerEditScreen> createState() => _CustomerEditScreenState();
@@ -53,7 +53,7 @@ class _CustomerEditScreenState extends State<CustomerEditScreen> {
       'phone': _phoneController.text.trim(), // Incluir teléfono
     };
 
-    final wcService = context.read<WooCommerceService>(); // Obtener servicio
+    final wcService = getIt<WooCommerceService>(); // Obtener servicio via GetIt
     final scaffoldMessenger = ScaffoldMessenger.of(context); // Capturar ScaffoldMessenger
     final navigator = Navigator.of(context); // Capturar Navigator
 
@@ -68,9 +68,9 @@ class _CustomerEditScreenState extends State<CustomerEditScreen> {
         final String customerId = newCustomer['id'].toString();
         final String firstName = newCustomer['first_name'] ?? '';
         final String lastName = newCustomer['last_name'] ?? '';
-        final String displayName = (firstName + ' ' + lastName).trim().isEmpty
+        final String displayName = ('$firstName $lastName').trim().isEmpty
             ? (newCustomer['email'] ?? 'Cliente $customerId')
-            : (firstName + ' ' + lastName).trim();
+            : ('$firstName $lastName').trim();
 
         debugPrint("Cliente creado en WC: ID $customerId, Nombre: $displayName");
 
