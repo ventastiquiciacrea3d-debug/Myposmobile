@@ -45,6 +45,7 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
 
   String _printStatusMessage = '';
   double _printProgress = 0.0;
+  bool _isPaused = false; // ⚡ NUEVO: Control de pausa durante impresión
 
   // ⚡ OPTIMIZACIÓN: Generar comandos en background
   bool _isGeneratingCommands = false;
@@ -219,6 +220,35 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
     if (mounted) setState(() => _connected = false);
   }
 
+  /// ⚡ NUEVO: Pausar/Reanudar impresión
+  void _togglePause() {
+    if (!mounted || !_isPrinting) return;
+    setState(() {
+      _isPaused = !_isPaused;
+      _printStatusMessage = _isPaused ? '⏸️ Impresión pausada...' : 'Enviando a impresora...';
+    });
+    debugPrint('[ThermalPrinting] ${_isPaused ? "⏸️ PAUSED" : "▶️ RESUMED"}');
+  }
+
+  /// ⚡ NUEVO: Cancelar impresión
+  void _cancelPrint() {
+    if (!mounted || !_isPrinting) return;
+    setState(() {
+      _isPrinting = false;
+      _isPaused = false;
+      _printProgress = 0.0;
+      _printStatusMessage = '';
+    });
+    debugPrint('[ThermalPrinting] ❌ Print CANCELLED by user');
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('❌ Impresión cancelada'),
+        backgroundColor: Colors.orange,
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
   /// ⚡ OPTIMIZADO: Usar comandos pregenerados (ya no genera durante impresión)
   Future<void> _printLabels() async {
     debugPrint('[ThermalPrinting] 🖨️ Print button pressed');
@@ -277,14 +307,23 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
       final totalCommands = _generatedCommands.length;
 
       for (int i = 0; i < totalCommands; i += chunkSize) {
-        if (!mounted) throw Exception("Operación cancelada.");
+        // ⚡ NUEVO: Verificar si fue cancelado
+        if (!mounted || !_isPrinting) throw Exception("Impresión cancelada por el usuario.");
+
+        // ⚡ NUEVO: Esperar mientras está pausado
+        while (_isPaused && _isPrinting) {
+          await Future.delayed(const Duration(milliseconds: 100));
+          if (!mounted || !_isPrinting) throw Exception("Impresión cancelada.");
+        }
 
         final end = (i + chunkSize > totalCommands) ? totalCommands : i + chunkSize;
         final chunk = _generatedCommands.sublist(i, end).join('\n');
 
         if (mounted) {
           setState(() {
-            _printStatusMessage = 'Enviando ${end} de $totalCommands etiquetas...';
+            _printStatusMessage = _isPaused
+                ? '⏸️ Pausado - ${end} de $totalCommands etiquetas'
+                : 'Enviando ${end} de $totalCommands etiquetas...';
             _printProgress = end / totalCommands;
           });
         }
@@ -292,9 +331,11 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
         // Convertir string a bytes
         final bytes = chunk.codeUnits;
 
-        // Enviar a impresora
-        if (!await _printerService.printCommands(bytes)) {
-          throw Exception("Fallo al enviar comandos a la impresora.");
+        // Enviar a impresora (solo si no está pausado)
+        if (!_isPaused) {
+          if (!await _printerService.printCommands(bytes)) {
+            throw Exception("Fallo al enviar comandos a la impresora.");
+          }
         }
 
         // Pequeña pausa entre chunks
@@ -329,6 +370,7 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
       if (mounted) {
         setState(() {
           _isPrinting = false;
+          _isPaused = false; // ⚡ NUEVO: Reset pausa
           _printProgress = 0.0;
           _printStatusMessage = '';
         });
@@ -663,12 +705,56 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
           ? Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text(_printStatusMessage, style: const TextStyle(fontWeight: FontWeight.bold)),
+          // Mensaje de estado
+          Text(
+            _printStatusMessage,
+            style: const TextStyle(fontWeight: FontWeight.bold),
+            textAlign: TextAlign.center,
+          ),
           const SizedBox(height: 8),
+          // Barra de progreso
           LinearProgressIndicator(
             value: _printProgress,
             minHeight: 10,
             borderRadius: BorderRadius.circular(5),
+            backgroundColor: Colors.grey[300],
+            valueColor: AlwaysStoppedAnimation<Color>(
+              _isPaused ? Colors.orange : Theme.of(context).primaryColor,
+            ),
+          ),
+          const SizedBox(height: 8),
+          // Porcentaje
+          Text(
+            '${(_printProgress * 100).toInt()}% completado',
+            style: const TextStyle(fontSize: 12, color: Colors.grey),
+          ),
+          const SizedBox(height: 12),
+          // Botones de control
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              // Botón Pausar/Reanudar
+              ElevatedButton.icon(
+                icon: Icon(_isPaused ? Icons.play_arrow : Icons.pause),
+                label: Text(_isPaused ? 'REANUDAR' : 'PAUSAR'),
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  backgroundColor: _isPaused ? Colors.green : Colors.orange,
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: _togglePause,
+              ),
+              // Botón Cancelar
+              OutlinedButton.icon(
+                icon: const Icon(Icons.cancel, color: Colors.red),
+                label: const Text('CANCELAR', style: TextStyle(color: Colors.red)),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  side: const BorderSide(color: Colors.red, width: 2),
+                ),
+                onPressed: _cancelPrint,
+              ),
+            ],
           ),
         ],
       )
