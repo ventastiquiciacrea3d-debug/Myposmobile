@@ -163,16 +163,47 @@ class _LabelPrintingScreenState extends ConsumerState<LabelPrintingScreen> {
       if (productToProcess != null) {
         if (productToProcess.isVariable) {
           _availableVariations = await getIt<ProductRepository>().getAllVariations(productToProcess.id);
+          debugPrint("[LabelPrintingScreen] 🔍 DESPUÉS DE getAllVariations():");
+          debugPrint("[LabelPrintingScreen] 🔍 _availableVariations.length: ${_availableVariations.length}");
+          debugPrint("[LabelPrintingScreen] 🔍 _availableVariations IDs: ${_availableVariations.map((v) => v.id).join(', ')}");
         }
 
         if (!mounted) return;
         setState(() {
           _selectedProduct = productToProcess;
-          _resolvedVariant = productToProcess.isSimple ? productToProcess : null;
           _selectedAttributes = {};
           _currentProductError = null;
-          if (productToProcess.isVariable) {
-            if (productToProcess.fullAttributesWithOptions != null && productToProcess.fullAttributesWithOptions!.isNotEmpty) {
+
+          // ⚡ DEBUG: Logs para entender el problema
+          debugPrint("[LabelPrintingScreen] ========== PRODUCTO SELECCIONADO ==========");
+          debugPrint("[LabelPrintingScreen] Nombre: ${productToProcess.name}");
+          debugPrint("[LabelPrintingScreen] ID: ${productToProcess.id}");
+          debugPrint("[LabelPrintingScreen] Tipo: ${productToProcess.type}");
+          debugPrint("[LabelPrintingScreen] isSimple: ${productToProcess.isSimple}");
+          debugPrint("[LabelPrintingScreen] isVariable: ${productToProcess.isVariable}");
+          debugPrint("[LabelPrintingScreen] isVariation: ${productToProcess.isVariation}");
+          debugPrint("[LabelPrintingScreen] fullAttributesWithOptions: ${productToProcess.fullAttributesWithOptions}");
+          debugPrint("[LabelPrintingScreen] variations: ${productToProcess.variations}");
+
+          // ⚡ FIX: Determinar si el producto puede ser agregado directamente
+          bool canAddDirectly = false;
+
+          if (productToProcess.isSimple) {
+            // Productos simples siempre se pueden agregar directamente
+            canAddDirectly = true;
+            debugPrint("[LabelPrintingScreen] ✅ Producto SIMPLE - puede agregarse directamente");
+          } else if (productToProcess.isVariation) {
+            // Variaciones (productos hijos) también se pueden agregar directamente
+            canAddDirectly = true;
+            debugPrint("[LabelPrintingScreen] ✅ Producto VARIATION - puede agregarse directamente");
+          } else if (productToProcess.isVariable) {
+            // Si es variable pero no tiene opciones configurables, tratarlo como simple
+            if (productToProcess.fullAttributesWithOptions == null || productToProcess.fullAttributesWithOptions!.isEmpty) {
+              canAddDirectly = true;
+              debugPrint("[LabelPrintingScreen] ✅ Producto VARIABLE sin opciones configurables - tratando como simple");
+            } else {
+              // Tiene opciones - cargar los atributos para selección
+              debugPrint("[LabelPrintingScreen] ⚠️ Producto VARIABLE con ${productToProcess.fullAttributesWithOptions!.length} atributos - requiere selección");
               for (var attr in productToProcess.fullAttributesWithOptions!) {
                 final String? attrSlug = attr['slug'] as String?;
                 if (attrSlug != null) _selectedAttributes[attrSlug] = null;
@@ -180,10 +211,14 @@ class _LabelPrintingScreenState extends ConsumerState<LabelPrintingScreen> {
               if (_availableVariations.isEmpty && (productToProcess.variations?.isNotEmpty ?? false)) {
                 _currentProductError = "No se pudieron cargar las variantes de este producto.";
               }
-            } else {
-              _currentProductError = "Este producto variable no tiene opciones configurables.";
             }
           }
+
+          // Configurar _resolvedVariant según si puede agregarse directamente
+          _resolvedVariant = canAddDirectly ? productToProcess : null;
+          debugPrint("[LabelPrintingScreen] _resolvedVariant: ${_resolvedVariant?.name ?? 'null'}");
+          debugPrint("[LabelPrintingScreen] ================================================");
+
           _isLoadingProductDetails = false;
           _quantity = 1;
         });
@@ -209,28 +244,77 @@ class _LabelPrintingScreenState extends ConsumerState<LabelPrintingScreen> {
     final allAttributesSelected = _selectedAttributes.values.every((value) => value != null);
 
     if (allAttributesSelected) {
-      final attributesForSearch = _selectedAttributes.cast<String, String>();
-      final matchingVariant = _availableVariations.firstWhereOrNull((variant) {
-        if (variant.attributes == null) return false;
+      debugPrint("[LabelPrintingScreen] 🔍 BUSCANDO VARIANTE:");
+      debugPrint("[LabelPrintingScreen] 🔍 _selectedAttributes: $_selectedAttributes");
+      debugPrint("[LabelPrintingScreen] 🔍 _availableVariations.length: ${_availableVariations.length}");
+      debugPrint("[LabelPrintingScreen] 🔍 _availableVariations IDs: ${_availableVariations.map((v) => v.id).join(', ')}");
 
-        return attributesForSearch.entries.every((selectedAttr) {
-          final selectedKeyLower = selectedAttr.key.toLowerCase();
-          final selectedValueLower = selectedAttr.value.toLowerCase();
+      // 🔍 DEBUG: Ver atributos de la primera variante
+      if (_availableVariations.isNotEmpty) {
+        final firstVariant = _availableVariations.first;
+        debugPrint("[LabelPrintingScreen] 🔍 Primera variante (${firstVariant.id}):");
+        debugPrint("[LabelPrintingScreen] 🔍   attributes: ${firstVariant.attributes}");
+      }
 
-          return variant.attributes!.any((variantAttr) {
-            final apiSlugLower = variantAttr['slug']?.toString().toLowerCase();
-            final apiNameLower = variantAttr['name']?.toString().toLowerCase();
-            final apiOptionLower = variantAttr['option']?.toString().toLowerCase();
-
-            if (apiOptionLower == null) return false;
-
-            final bool keyMatches = (apiSlugLower == selectedKeyLower || (apiSlugLower?.replaceFirst('attribute_', '') ?? '') == selectedKeyLower) || (apiNameLower == selectedKeyLower);
-            final bool optionMatches = apiOptionLower == selectedValueLower;
-
-            return keyMatches && optionMatches;
-          });
-        });
+      // 🔧 FIX: Normalizar atributos seleccionados (espacios → guiones, minúsculas, trim)
+      final normalizedSelected = <String, String>{};
+      _selectedAttributes.forEach((key, value) {
+        if (value != null) {
+          final normalizedKey = key.replaceAll(' ', '-').toLowerCase().trim();
+          final normalizedValue = value.toLowerCase().trim();
+          normalizedSelected[normalizedKey] = normalizedValue;
+        }
       });
+
+      debugPrint("[LabelPrintingScreen] 🔧 Atributos normalizados: $normalizedSelected");
+
+      app_product.Product? matchingVariant;
+      for (final variant in _availableVariations) {
+        if (variant.attributes == null) continue;
+
+        debugPrint("[LabelPrintingScreen] 🔍 Probando variante ${variant.id}:");
+        debugPrint("[LabelPrintingScreen] 🔍   Atributos: ${variant.attributes}");
+
+        bool allMatch = true;
+        for (final selectedEntry in normalizedSelected.entries) {
+          final selectedKey = selectedEntry.key;
+          final selectedValue = selectedEntry.value;
+
+          debugPrint("[LabelPrintingScreen] 🔍   Buscando match para: $selectedKey = $selectedValue");
+
+          // Buscar un atributo de la variante que coincida
+          bool foundMatch = false;
+          for (final variantAttr in variant.attributes!) {
+            final variantNameRaw = variantAttr['name']?.toString();
+            final variantSlugRaw = variantAttr['slug']?.toString();
+            final variantOptionRaw = variantAttr['option']?.toString();
+
+            final variantName = variantNameRaw?.replaceAll(' ', '-').toLowerCase().trim();
+            final variantSlug = variantSlugRaw?.replaceAll(' ', '-').toLowerCase().trim();
+            final variantOption = variantOptionRaw?.toLowerCase().trim();
+
+            debugPrint("[LabelPrintingScreen] 🔍     Comparando con: name=$variantName, slug=$variantSlug, option=$variantOption");
+
+            if ((variantName == selectedKey || variantSlug == selectedKey) && variantOption == selectedValue) {
+              debugPrint("[LabelPrintingScreen] ✅     MATCH!");
+              foundMatch = true;
+              break;
+            }
+          }
+
+          if (!foundMatch) {
+            debugPrint("[LabelPrintingScreen] ❌     NO MATCH para $selectedKey = $selectedValue");
+            allMatch = false;
+            break;
+          }
+        }
+
+        if (allMatch) {
+          debugPrint("[LabelPrintingScreen] ✅ VARIANTE ENCONTRADA: ${variant.id}");
+          matchingVariant = variant;
+          break;
+        }
+      }
 
       setState(() {
         _resolvedVariant = matchingVariant;
@@ -311,12 +395,20 @@ class _LabelPrintingScreenState extends ConsumerState<LabelPrintingScreen> {
   }
 
   void _addOrUpdateItem() {
+    debugPrint("[LabelPrintingScreen] ========== INTENTANDO AGREGAR A LA COLA ==========");
+    debugPrint("[LabelPrintingScreen] Producto: ${_selectedProduct?.name ?? 'null'}");
+    debugPrint("[LabelPrintingScreen] isVariable: ${_selectedProduct?.isVariable}");
+    debugPrint("[LabelPrintingScreen] _resolvedVariant: ${_resolvedVariant?.name ?? 'null'}");
+    debugPrint("[LabelPrintingScreen] _selectedAttributes: $_selectedAttributes");
+
     if (!mounted || !_formKey.currentState!.validate()) return;
     if (_selectedProduct == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Seleccione un producto."), backgroundColor: Colors.orange));
       return;
     }
     if (_selectedProduct!.isVariable && _resolvedVariant == null) {
+      debugPrint("[LabelPrintingScreen] ❌ ERROR: Producto variable sin _resolvedVariant");
+      debugPrint("[LabelPrintingScreen] fullAttributesWithOptions: ${_selectedProduct!.fullAttributesWithOptions}");
       setState(() => _currentProductError = "Seleccione todas las opciones de la variante.");
       return;
     }
@@ -594,15 +686,37 @@ class _LabelPrintingScreenState extends ConsumerState<LabelPrintingScreen> {
         final String attrName = attr['name'] as String? ?? 'Atributo';
         final String attrSlug = attr['slug'] as String? ?? attrName.toLowerCase();
 
-        final List<String> options = (attr['options'] as List<dynamic>?)
-            ?.map((o) => o.toString())
-            .where((o) => o.isNotEmpty)
-            .toList() ?? [];
+        // ⚡ FIX: Extraer opciones desde las variaciones disponibles en lugar de usar IDs
+        // Las variaciones tienen el formato correcto: {"name":"Color","option":"Rojo","slug":"pa_color"}
+        final Set<String> optionsSet = {};
+
+        for (final variation in _availableVariations) {
+          if (variation.attributes != null) {
+            for (final variantAttr in variation.attributes!) {
+              final variantSlug = variantAttr['slug']?.toString().toLowerCase().trim();
+              final variantOption = variantAttr['option']?.toString().trim();
+
+              if (variantSlug == attrSlug.toLowerCase() && variantOption != null && variantOption.isNotEmpty) {
+                optionsSet.add(variantOption);
+              }
+            }
+          }
+        }
+
+        final List<String> options = optionsSet.toList()..sort();
+
+        debugPrint("[LabelPrintingScreen] 🎨 Atributo '$attrName' ($attrSlug) tiene ${options.length} opciones: $options");
+
+        // ⚡ FIX: Validar que el valor seleccionado exista en las opciones
+        final String? currentValue = _selectedAttributes[attrSlug];
+        final String? validatedValue = (currentValue != null && options.contains(currentValue))
+            ? currentValue
+            : null;
 
         return Padding(
           padding: const EdgeInsets.only(top: 8.0),
           child: DropdownButtonFormField<String>(
-            value: _selectedAttributes[attrSlug],
+            value: validatedValue,
             decoration: InputDecoration(
               labelText: attrName,
               border: const OutlineInputBorder(),

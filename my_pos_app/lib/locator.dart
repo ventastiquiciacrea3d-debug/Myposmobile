@@ -28,6 +28,7 @@ import 'services/sync_manager.dart';
 import 'services/transaction_service.dart';
 import 'services/woocommerce_service.dart';
 import 'services/data_migration_service.dart';
+import 'services/product_sync_service.dart'; // ✅ Servicio para descargar todos los productos
 
 // ✅ OPTIMIZACIÓN EXTREMA: Nuevos servicios de batería y almacenamiento
 import 'services/event_driven_polling_service.dart';
@@ -168,6 +169,13 @@ Future<void> setupLocator() async {
   getIt.registerLazySingleton<ProductRepository>(() => ProductRepository());
   getIt.registerLazySingleton<OrderRepository>(() => OrderRepository());
   getIt.registerLazySingleton<InventoryRepository>(() => InventoryRepository());
+
+  // ✅ PRODUCT SYNC: Servicio para descargar todos los productos de WooCommerce
+  getIt.registerLazySingleton<ProductSyncService>(() => ProductSyncService(
+    wooService: getIt<WooCommerceService>(),
+    productRepo: getIt<ProductRepository>(),
+    storageService: getIt<StorageService>(),
+  ));
 
   // ✓ PROPUESTA 1: Cache Warming Service (depende de repositories)
   getIt.registerLazySingleton<CacheWarmingService>(() => CacheWarmingService());

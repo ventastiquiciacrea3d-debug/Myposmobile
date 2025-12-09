@@ -1,5 +1,5 @@
 import 'package:flutter/foundation.dart';
-import '../models/product_compact.dart';
+import '../models/product_optimized.dart';
 import 'database_service.dart';
 import '../objectbox.g.dart';
 import 'package:objectbox/objectbox.dart' as obx;
@@ -9,7 +9,7 @@ class LazyLoadingService extends ChangeNotifier {
   final DatabaseService _db;
 
   /// Cache en memoria (L1) - Top 20 productos
-  final Map<int, ProductCompact> _hotCache = {};
+  final Map<int, ProductOptimized> _hotCache = {};
   DateTime _hotCacheExpiry = DateTime.now();
 
   LazyLoadingService(this._db);
@@ -24,8 +24,8 @@ class LazyLoadingService extends ChangeNotifier {
 
     debugPrint("[LazyLoading] Loading essential data...");
 
-    // ObjectBox carga solo índices automáticamente (lazy by design)
-    final box = _db.store.box<ProductCompact>();
+    // ✅ FIX: Usar ProductOptimized (tabla correcta donde se guardan los productos)
+    final box = _db.store.box<ProductOptimized>();
     final count = box.count();
 
     stopwatch.stop();
@@ -41,11 +41,12 @@ class LazyLoadingService extends ChangeNotifier {
 
     debugPrint("[LazyLoading] Refreshing hot cache...");
 
-    final box = _db.store.box<ProductCompact>();
+    // ✅ FIX: Usar ProductOptimized
+    final box = _db.store.box<ProductOptimized>();
 
     // Top 20 productos con más stock
     final query = box.query()
-      .order(ProductCompact_.stockQuantity, flags: obx.Order.descending)
+      .order(ProductOptimized_.stockQuantity, flags: obx.Order.descending)
       .build();
 
     query.limit = 20;
@@ -63,7 +64,7 @@ class LazyLoadingService extends ChangeNotifier {
   }
 
   /// Buscar producto en hot cache (< 1ms)
-  ProductCompact? getFromHotCache(int productId) {
+  ProductOptimized? getFromHotCache(int productId) {
     return _hotCache[productId];
   }
 
@@ -71,7 +72,7 @@ class LazyLoadingService extends ChangeNotifier {
 
   /// Cargar detalles completos de producto
   /// Tiempo: <50ms por producto
-  Future<ProductCompact?> loadProductDetails(int productId) async {
+  Future<ProductOptimized?> loadProductDetails(int productId) async {
     // Verificar hot cache primero
     var product = getFromHotCache(productId);
     if (product != null) {
@@ -79,9 +80,9 @@ class LazyLoadingService extends ChangeNotifier {
       return product;
     }
 
-    // Buscar en ObjectBox
-    final box = _db.store.box<ProductCompact>();
-    final query = box.query(ProductCompact_.id.equals(productId)).build();
+    // ✅ FIX: Usar ProductOptimized
+    final box = _db.store.box<ProductOptimized>();
+    final query = box.query(ProductOptimized_.id.equals(productId)).build();
     product = query.findFirst();
     query.close();
 
@@ -98,9 +99,10 @@ class LazyLoadingService extends ChangeNotifier {
   // ==================== BÚSQUEDAS OPTIMIZADAS ====================
 
   /// Búsqueda por SKU (O(log n) - ultra rápida)
-  Future<ProductCompact?> searchBySKU(String sku) async {
-    final box = _db.store.box<ProductCompact>();
-    final query = box.query(ProductCompact_.sku.equals(sku)).build();
+  Future<ProductOptimized?> searchBySKU(String sku) async {
+    // ✅ FIX: Usar ProductOptimized
+    final box = _db.store.box<ProductOptimized>();
+    final query = box.query(ProductOptimized_.sku.equals(sku)).build();
     final product = query.findFirst();
     query.close();
 
@@ -108,9 +110,10 @@ class LazyLoadingService extends ChangeNotifier {
   }
 
   /// Búsqueda por Barcode (O(log n))
-  Future<ProductCompact?> searchByBarcode(String barcode) async {
-    final box = _db.store.box<ProductCompact>();
-    final query = box.query(ProductCompact_.barcode.equals(barcode)).build();
+  Future<ProductOptimized?> searchByBarcode(String barcode) async {
+    // ✅ FIX: Usar ProductOptimized
+    final box = _db.store.box<ProductOptimized>();
+    final query = box.query(ProductOptimized_.barcode.equals(barcode)).build();
     final product = query.findFirst();
     query.close();
 
@@ -118,12 +121,13 @@ class LazyLoadingService extends ChangeNotifier {
   }
 
   /// Búsqueda por nombre (O(log n) con índice full-text)
-  Future<List<ProductCompact>> searchByName(String term, {int limit = 20}) async {
-    final box = _db.store.box<ProductCompact>();
+  Future<List<ProductOptimized>> searchByName(String term, {int limit = 20}) async {
+    // ✅ FIX: Usar ProductOptimized
+    final box = _db.store.box<ProductOptimized>();
 
     final query = box.query(
-      ProductCompact_.name.contains(term, caseSensitive: false)
-    ).order(ProductCompact_.name).build();
+      ProductOptimized_.name.contains(term, caseSensitive: false)
+    ).order(ProductOptimized_.name).build();
 
     query.limit = limit;
     final results = query.find();
@@ -137,7 +141,8 @@ class LazyLoadingService extends ChangeNotifier {
     return {
       'hot_cache_size': _hotCache.length,
       'hot_cache_expiry': _hotCacheExpiry.toString(),
-      'total_products': _db.store.box<ProductCompact>().count(),
+      // ✅ FIX: Usar ProductOptimized
+      'total_products': _db.store.box<ProductOptimized>().count(),
     };
   }
 }

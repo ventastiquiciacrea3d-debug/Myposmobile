@@ -91,13 +91,26 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
 
   void _showProductBottomSheet(Product product) {
     if (!mounted) return;
-    ref.read(scannerProvider.notifier).resetScanner();
+
+    // No resetear aún - el bottom sheet se mostrará sobre la pantalla de "Producto encontrado..."
+    debugPrint("[ScannerScreen] 📱 Showing product bottom sheet for: ${product.name}");
+
     showModalBottomSheet(
-      context: context, isScrollControlled: true, backgroundColor: Colors.transparent,
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
       builder: (context) => AddToCartDialog(productId: product.id),
     ).whenComplete(() {
-      // Don't automatically resume - prevents camera restart loop
-      debugPrint("[ScannerScreen] Bottom sheet closed");
+      debugPrint("[ScannerScreen] Bottom sheet closed - resuming scanner");
+
+      // ⚡ NUEVO: Resetear y reiniciar el scanner después de cerrar el bottom sheet
+      if (mounted) {
+        ref.read(scannerProvider.notifier).resetScanner().then((_) {
+          if (mounted) {
+            ref.read(scannerProvider.notifier).startScanner();
+          }
+        });
+      }
     });
   }
 
@@ -293,6 +306,49 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
     final hasSearchQuery = _barcodeController.text.trim().isNotEmpty;
     final shouldShowSearchResultsView = _barcodeFocusNode.hasFocus && hasSearchQuery;
     final showBackButtonInAppBar = shouldShowSearchResultsView;
+
+    // ⚡ NUEVO: Listener para mostrar producto cuando se escanea (debe estar en build())
+    ref.listen<ScannerState>(
+      scannerProvider,
+      (previous, next) {
+        // Solo reaccionar cuando el estado cambia a productFound
+        if (next.viewState == ScannerViewState.productFound &&
+            next.scannedProduct != null &&
+            previous?.viewState != ScannerViewState.productFound) {
+
+          debugPrint("[ScannerScreen] 🎯 Product found from scan: ${next.scannedProduct!.name}");
+
+          // Mostrar el producto en bottom sheet
+          if (mounted) {
+            _showProductBottomSheet(next.scannedProduct!);
+          }
+        }
+
+        // También manejar el caso de error - resetear automáticamente después de 3 segundos
+        if (next.viewState == ScannerViewState.error &&
+            previous?.viewState != ScannerViewState.error) {
+          debugPrint("[ScannerScreen] ⚠️ Scanner error detected, will auto-reset");
+          Future.delayed(const Duration(seconds: 3), () {
+            if (mounted) {
+              ref.read(scannerProvider.notifier).resetScanner();
+              ref.read(scannerProvider.notifier).startScanner();
+            }
+          });
+        }
+
+        // Y manejar el caso de "no product" - resetear automáticamente después de 2 segundos
+        if (next.viewState == ScannerViewState.noProduct &&
+            previous?.viewState != ScannerViewState.noProduct) {
+          debugPrint("[ScannerScreen] 📭 No product found, will auto-resume");
+          Future.delayed(const Duration(seconds: 2), () {
+            if (mounted) {
+              ref.read(scannerProvider.notifier).resetScanner();
+              ref.read(scannerProvider.notifier).startScanner();
+            }
+          });
+        }
+      },
+    );
 
     return Scaffold(
       resizeToAvoidBottomInset: false,

@@ -8,9 +8,11 @@ import 'package:collection/collection.dart';
 
 import '../models/product.dart' as app_product;
 import '../providers/order_notifier.dart';
+import '../providers/shared_providers.dart';
 import '../repositories/product_repository.dart';
 import '../services/woocommerce_service.dart';
 import '../locator.dart';
+import '../config/constants.dart';
 import 'quantity_selector.dart';
 
 class AddToCartDialog extends ConsumerStatefulWidget {
@@ -46,10 +48,19 @@ class _AddToCartDialogState extends ConsumerState<AddToCartDialog> {
 
   final ProductRepository _productRepository = getIt<ProductRepository>();
 
+  // ✅ NUEVO: Configuración para permitir cambiar variación después de escanear
+  bool _allowChangeVariationAfterScan = false;
+
   @override
   void initState() {
     super.initState();
+    _loadSettings();
     _loadProductData();
+  }
+
+  void _loadSettings() {
+    final prefs = ref.read(sharedPreferencesProvider);
+    _allowChangeVariationAfterScan = prefs.getBool(allowChangeVariationAfterScanPrefKey) ?? false;
   }
 
   Future<void> _loadProductData() async {
@@ -62,7 +73,9 @@ class _AddToCartDialogState extends ConsumerState<AddToCartDialog> {
     });
 
     try {
-      final initialProduct = await _productRepository.getProductById(widget.productId, forceApi: true);
+      // ✅ FIX: Usar cache local (forceApi: false) para carga instantánea
+      // El scanner ya encontró el producto localmente, no necesitamos API call
+      final initialProduct = await _productRepository.getProductById(widget.productId, forceApi: false);
       if (!mounted) return;
       if (initialProduct == null) throw ProductNotFoundException(widget.productId);
 
@@ -70,7 +83,8 @@ class _AddToCartDialogState extends ConsumerState<AddToCartDialog> {
       app_product.Product? initialVariant;
 
       if (initialProduct.isVariation && initialProduct.parentId != null) {
-        final loadedParent = await _productRepository.getProductById(initialProduct.parentId.toString(), forceApi: true);
+        // ✅ FIX: También usar cache local para el producto padre
+        final loadedParent = await _productRepository.getProductById(initialProduct.parentId.toString(), forceApi: false);
         if (!mounted) return;
         if (loadedParent == null) throw ProductNotFoundException(initialProduct.parentId.toString());
 
@@ -87,7 +101,12 @@ class _AddToCartDialogState extends ConsumerState<AddToCartDialog> {
           if (mounted) {
             setState(() {
               _availableVariations = variations;
-              _findAndLoadMatchingVariation();
+              // ✅ CONFIGURACIÓN: Buscar variación según preferencia del usuario
+              // - Si _allowChangeVariationAfterScan: siempre buscar (permite cambiar atributos)
+              // - Si NO: solo buscar si no hay variación seleccionada (preservar escaneada)
+              if (_allowChangeVariationAfterScan || _selectedVariationProduct == null) {
+                _findAndLoadMatchingVariation();
+              }
             });
           }
         });
@@ -145,10 +164,14 @@ class _AddToCartDialogState extends ConsumerState<AddToCartDialog> {
     if (parentProduct.fullAttributesWithOptions != null) {
       for (var attrJson in parentProduct.fullAttributesWithOptions!) {
         final String? uiName = attrJson['name']?.toString();
-        final List<String> opts = (attrJson['options'] as List<dynamic>?)
+        final List<String> rawOpts = (attrJson['options'] as List<dynamic>?)
             ?.map((o) => o.toString())
             .where((o) => o.isNotEmpty)
             .toList() ?? [];
+
+        // ✅ FIX: Deduplicate options here as well
+        // After WordPress fix, duplicate option names may exist in the API response
+        final List<String> opts = rawOpts.toSet().toList();
 
         if (uiName != null && uiName.isNotEmpty && opts.isNotEmpty) {
           String slug = attrJson['slug']?.toString() ?? uiName.toLowerCase().replaceAll(' ', '-');
@@ -179,7 +202,10 @@ class _AddToCartDialogState extends ConsumerState<AddToCartDialog> {
   List<String> _getAvailableOptionsForAttribute(String attributeSlug) {
     if (_product == null || !_product!.isVariable || _availableVariations.isEmpty) {
       final attrDef = _configurableAttributesUI.firstWhereOrNull((a) => a['slug'] == attributeSlug);
-      return attrDef?['options'] as List<String>? ?? [];
+      final rawOptions = attrDef?['options'] as List<String>? ?? [];
+      // ✅ FIX: Deduplicate options to prevent DropdownButton assertion error
+      // After WordPress fix, same option names (e.g., "Rojo") may appear multiple times
+      return rawOptions.toSet().toList()..sort();
     }
 
     List<app_product.Product> filteredVariations = List.from(_availableVariations);

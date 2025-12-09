@@ -170,16 +170,46 @@ class InventoryRepository {
     try {
       final box = _db!.store.box<InventoryMovementCompact>();
 
-      // Limpiar caché anterior
-      box.removeAll();
+      // ⚡ FIX: Obtener todos los movimientos existentes para preservar localIds
+      final existingQuery = box.query().build();
+      final existingMovements = existingQuery.find();
+      existingQuery.close();
 
-      // Convertir y guardar en ObjectBox
-      final compactMovements = serverMovements
-          .map((movement) => _converter!.movementToCompact(movement))
-          .toList();
+      // Crear mapa de movementId -> ObjectBox localId
+      final existingLocalIds = <String, int>{};
+      for (final existing in existingMovements) {
+        existingLocalIds[existing.movementId] = existing.localId;
+      }
+
+      // Convertir movimientos y asignar localId si ya existen
+      final compactMovements = serverMovements.map((movement) {
+        final compact = _converter!.movementToCompact(movement);
+
+        // ⚡ FIX: Si ya existe, copiar el localId para actualizar
+        if (existingLocalIds.containsKey(compact.movementId)) {
+          compact.localId = existingLocalIds[compact.movementId]!;
+        }
+
+        return compact;
+      }).toList();
+
+      // ⚡ FIX: Guardar todos sin removeAll() para evitar race conditions
+      // putMany() actualizará existentes y creará nuevos
       box.putMany(compactMovements);
 
-      debugPrint("... ✅ Saved ${compactMovements.length} movements to ObjectBox");
+      // ⚡ FIX: Eliminar movimientos que ya no están en el servidor
+      final serverMovementIds = serverMovements.map((m) => m.id).toSet();
+      final toRemove = existingMovements
+          .where((e) => !serverMovementIds.contains(e.movementId))
+          .map((e) => e.localId)
+          .toList();
+
+      if (toRemove.isNotEmpty) {
+        box.removeMany(toRemove);
+        debugPrint("... 🗑️ Removed ${toRemove.length} stale movements from ObjectBox");
+      }
+
+      debugPrint("... ✅ Saved ${compactMovements.length} movements to ObjectBox (${existingLocalIds.length} updated, ${compactMovements.length - existingLocalIds.length} new)");
     } catch (e) {
       debugPrint("[InventoryRepository._fetchAndCacheInventoryHistory] ❌ Error saving to ObjectBox: $e");
       // Continuar de todas formas, retornar los movimientos del servidor
@@ -306,12 +336,25 @@ class InventoryRepository {
     }
 
     try {
-      // ✅ OBJECTBOX: Convertir y guardar
-      final compact = _converter!.movementToCompact(movement);
       final box = _db!.store.box<InventoryMovementCompact>();
+
+      // ⚡ FIX: Buscar si ya existe el movimiento por su movementId
+      final query = box.query(InventoryMovementCompact_.movementId.equals(movement.id)).build();
+      final existing = query.findFirst();
+      query.close();
+
+      // Convertir a InventoryMovementCompact
+      final compact = _converter!.movementToCompact(movement);
+
+      // ⚡ FIX: Si ya existe, copiar el localId para actualizar en lugar de insertar
+      if (existing != null) {
+        compact.localId = existing.localId;
+      }
+
+      // Guardar (actualizar o insertar)
       box.put(compact);
 
-      debugPrint("[InventoryRepository] ✅ Movement ID ${movement.id} saved to ObjectBox");
+      debugPrint("[InventoryRepository] ✅ Movement ID ${movement.id} ${existing != null ? 'updated' : 'saved'} to ObjectBox");
     } catch (e) {
       debugPrint("[InventoryRepository.saveInventoryMovement] ❌ Error saving to ObjectBox: $e");
       rethrow;

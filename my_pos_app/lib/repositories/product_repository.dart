@@ -113,7 +113,7 @@ class ProductRepository {
     }
   }
 
-  Future<Map<String, dynamic>> searchProductsByTerm(String term, { Function(List<Product> cachedResults)? onCachedResults, bool forceApi = false, int limit = 20, int page = 1, bool searchOnlyAvailable = true }) async {
+  Future<Map<String, dynamic>> searchProductsByTerm(String term, { Function(List<Product> cachedResults)? onCachedResults, bool forceApi = false, bool localOnly = false, int limit = 20, int page = 1, bool searchOnlyAvailable = true }) async {
     final String searchTerm = term.trim();
     if (searchTerm.length < 2) {
       return {'products': [], 'total_products': 0, 'total_pages': 0, 'query': term};
@@ -128,17 +128,46 @@ class ProductRepository {
       }
     }
 
-    if (!forceApi && onCachedResults != null && page == 1) {
-      try {
-        final localResults = await _storageService.searchLocalProductsByNameOrSku(searchTerm);
-        if (localResults.isNotEmpty) {
-          var results = localResults.where((p) => p.type != 'variation' && (searchOnlyAvailable ? p.isAvailable : true));
-          Future.microtask(() => onCachedResults(results.take(limit).toList()));
+    // ✅ FIX: Buscar primero en BD local
+    try {
+      final localResults = await _storageService.searchLocalProductsByNameOrSku(searchTerm);
+      if (localResults.isNotEmpty) {
+        var filteredResults = localResults.where((p) => p.type != 'variation' && (searchOnlyAvailable ? p.isAvailable : true)).toList();
+
+        // Si hay resultados locales y solo queremos búsqueda local, retornar inmediatamente
+        if (localOnly || (!forceApi && page == 1 && filteredResults.length >= limit)) {
+          final paginatedResults = filteredResults.skip((page - 1) * limit).take(limit).toList();
+          debugPrint("[ProductRepository.searchProductsByTerm] ✅ Using LOCAL results only: ${paginatedResults.length} products found");
+
+          return {
+            'products': paginatedResults,
+            'total_products': filteredResults.length,
+            'total_pages': (filteredResults.length / limit).ceil(),
+            'query': searchTerm,
+          };
         }
-      } catch(e) { /* Ignorar errores de caché */ }
+
+        // Mostrar resultados locales via callback mientras se hace API call en segundo plano
+        if (!forceApi && onCachedResults != null && page == 1) {
+          Future.microtask(() => onCachedResults(filteredResults.take(limit).toList()));
+        }
+      } else if (localOnly) {
+        // Si solo queremos búsqueda local y no hay resultados, retornar vacío
+        debugPrint("[ProductRepository.searchProductsByTerm] ⚠️ No local results found for: $searchTerm");
+        return {'products': [], 'total_products': 0, 'total_pages': 0, 'query': searchTerm};
+      }
+    } catch(e) {
+      debugPrint("[ProductRepository.searchProductsByTerm] ⚠️ Error searching locally: $e");
+      if (localOnly) rethrow;
+    }
+
+    // ✅ Solo llamar API si NO es localOnly
+    if (localOnly) {
+      return {'products': [], 'total_products': 0, 'total_pages': 0, 'query': searchTerm};
     }
 
     try {
+      debugPrint("[ProductRepository.searchProductsByTerm] 📡 Fetching from API: $searchTerm");
       final apiResponse = await _wooCommerceService.searchProducts(searchTerm, limit: limit, page: page, searchOnlyAvailable: searchOnlyAvailable);
 
       final Map<String, dynamic> result = {

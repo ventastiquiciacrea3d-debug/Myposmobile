@@ -22,7 +22,12 @@ class LabelPreview extends StatelessWidget {
   String _getTextForKey(String key) {
     switch (key) {
       case 'productName': return data.displayName;
-      case 'variants': return data.selectedVariants.values.join(' / ');
+      case 'variants':
+        // ⚡ FIX: Mostrar nombre del atributo junto al valor (ej: "Color: Madera")
+        if (data.selectedVariants.isEmpty) return '';
+        return data.selectedVariants.entries
+            .map((entry) => '${entry.key}: ${entry.value}')
+            .join(' / ');
       case 'quantity': return 'Cant: ${data.quantity}';
       case 'lotNumber': return 'Lote: ${data.lotNumber ?? ""}';
       case 'date': return data.date;

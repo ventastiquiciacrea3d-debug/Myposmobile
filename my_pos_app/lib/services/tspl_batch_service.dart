@@ -11,13 +11,13 @@ class TsplBatchService {
   ///
   /// **Parámetros**:
   /// - [productsData]: Lista de productos con datos básicos (nombre, sku, precio, barcode)
-  /// - [settings]: Configuración de etiquetas (ancho, alto, campos visibles)
+  /// - [settings]: Configuración de etiquetas desde LabelSettings (objeto completo o map)
   /// - [onProgress]: Callback para actualizar progreso (current/total)
   ///
   /// **Returns**: Lista de comandos TSPL listos para enviar a impresora
   static Future<List<String>> generateBatchInBackground({
     required List<Map<String, dynamic>> productsData,
-    required Map<String, dynamic> settings,
+    required dynamic settings, // Puede ser Map o LabelSettings
     required void Function(int current, int total)? onProgress,
   }) async {
     debugPrint('[TsplBatch] 🚀 Starting batch generation for ${productsData.length} items');
@@ -102,50 +102,79 @@ class TsplBatchService {
   /// ⚡ OPTIMIZADO: Pre-construye el header y reduce operaciones de StringBuffer
   static String _generateSingleLabel(
     Map<String, dynamic> product,
-    Map<String, dynamic> settings,
+    dynamic settings,
   ) {
-    // Configuración de tamaño de etiqueta (extraer una sola vez)
-    final width = settings['width'] ?? 50.0;
-    final height = settings['height'] ?? 38.0;
-    final density = settings['density'] ?? 12;
-    final speed = settings['speed'] ?? 4;
-    final showName = settings['showName'] ?? true;
-    final showSku = settings['showSku'] ?? true;
-    final showPrice = settings['showPrice'] ?? false;
-    final showBarcode = settings['showBarcode'] ?? true;
+    // ⚡ FIX: Extraer configuración desde Map o LabelSettings
+    final width = settings is Map
+        ? (settings['width'] ?? 50.0)
+        : (settings.labelLayout?['width'] ?? 50.0);
+    final height = settings is Map
+        ? (settings['height'] ?? 38.0)
+        : (settings.labelLayout?['height'] ?? 38.0);
+    final density = settings is Map
+        ? (settings['density'] ?? 12)
+        : (settings.density ?? 12);
+    final speed = settings is Map
+        ? (settings['speed'] ?? 4)
+        : (settings.speed ?? 4);
+    final direction = settings is Map
+        ? (settings['direction'] ?? 1)
+        : (settings.direction ?? 1);
+    final gapMm = settings is Map
+        ? (settings['gapMm'] ?? 3.0)
+        : (settings.gapMm ?? 3.0);
+    final marginTop = settings is Map
+        ? (settings['marginTop'] ?? 10)
+        : (settings.marginTop ?? 10);
+    final marginLeft = settings is Map
+        ? (settings['marginLeft'] ?? 10)
+        : (settings.marginLeft ?? 10);
 
-    // Pre-construir header TSPL (siempre igual para cada etiqueta)
-    final header = 'SIZE $width mm, $height mm\nDENSITY $density\nSPEED $speed\nCLS\n';
+    final showName = settings is Map
+        ? (settings['showName'] ?? true)
+        : (settings.visibleAttributes?['productName'] ?? true);
+    final showSku = settings is Map
+        ? (settings['showSku'] ?? true)
+        : (settings.visibleAttributes?['sku'] ?? true);
+    final showPrice = settings is Map
+        ? (settings['showPrice'] ?? false)
+        : (settings.visibleAttributes?['price'] ?? false);
+    final showBarcode = settings is Map
+        ? (settings['showBarcode'] ?? true)
+        : (settings.visibleAttributes?['barcode'] ?? true);
+
+    // ⚡ FIX: Pre-construir header TSPL con configuración personalizada
+    final header = 'SIZE $width mm, $height mm\nGAP $gapMm mm, 0 mm\nDIRECTION $direction\nDENSITY $density\nSPEED $speed\nCLS\n';
 
     // Construir comandos de forma más eficiente
     final parts = <String>[header];
-    int currentY = 10;
+    int currentY = marginTop;
 
     // Nombre del producto
     if (showName) {
       final name = product['name'] ?? 'Producto';
-      parts.add('TEXT 10,$currentY,"3",0,1,1,"${_escapeText(name)}"\n');
+      parts.add('TEXT $marginLeft,$currentY,"3",0,1,1,"${_escapeText(name)}"\n');
       currentY += 40;
     }
 
     // SKU
     if (showSku) {
       final sku = product['sku'] ?? 'N/A';
-      parts.add('TEXT 10,$currentY,"2",0,1,1,"SKU: ${_escapeText(sku)}"\n');
+      parts.add('TEXT $marginLeft,$currentY,"2",0,1,1,"SKU: ${_escapeText(sku)}"\n');
       currentY += 30;
     }
 
     // Precio (típicamente oculto)
     if (showPrice) {
       final price = product['price'] ?? 0.0;
-      parts.add('TEXT 10,$currentY,"2",0,1,1,"\$$price"\n');
+      parts.add('TEXT $marginLeft,$currentY,"2",0,1,1,"\$$price"\n');
       currentY += 30;
     }
 
     // Código de barras
     if (showBarcode && product['barcode'] != null) {
       final barcode = product['barcode'];
-      parts.add('BARCODE 10,$currentY,"128",80,1,0,2,2,"$barcode"\n');
+      parts.add('BARCODE $marginLeft,$currentY,"128",80,1,0,2,2,"$barcode"\n');
       currentY += 100;
     }
 

@@ -75,11 +75,12 @@ class ProductAttributeSerializer {
       final jsonString = jsonEncode(combined);
       final bytes = utf8.encode(jsonString);
 
-      debugPrint(
-        '[ProductAttributeSerializer] Compressed: '
-        '${attributes?.length ?? 0} attrs + ${fullAttributesWithOptions?.length ?? 0} fullAttrs '
-        '→ ${bytes.length} bytes'
-      );
+      // ⚡ PERFORMANCE: Comentado para evitar spam de logs al guardar productos
+      // debugPrint(
+      //   '[ProductAttributeSerializer] Compressed: '
+      //   '${attributes?.length ?? 0} attrs + ${fullAttributesWithOptions?.length ?? 0} fullAttrs '
+      //   '→ ${bytes.length} bytes'
+      // );
 
       return Uint8List.fromList(bytes);
 
@@ -139,11 +140,12 @@ class ProductAttributeSerializer {
             .toList();
       }
 
-      debugPrint(
-        '[ProductAttributeSerializer] Decompressed: '
-        '${compressedData.length} bytes → '
-        '${attributes?.length ?? 0} attrs + ${fullAttrs?.length ?? 0} fullAttrs'
-      );
+      // ⚡ PERFORMANCE: Comentado para evitar spam de logs al leer productos
+      // debugPrint(
+      //   '[ProductAttributeSerializer] Decompressed: '
+      //   '${compressedData.length} bytes → '
+      //   '${attributes?.length ?? 0} attrs + ${fullAttrs?.length ?? 0} fullAttrs'
+      // );
 
       return {
         'attributes': attributes,
@@ -168,10 +170,11 @@ class ProductAttributeSerializer {
       final jsonString = jsonEncode(attributes);
       final bytes = utf8.encode(jsonString);
 
-      debugPrint(
-        '[ProductAttributeSerializer] Compressed: '
-        '${attributes.length} items → ${bytes.length} bytes'
-      );
+      // ⚡ PERFORMANCE: Comentado para evitar spam de logs al guardar productos
+      // debugPrint(
+      //   '[ProductAttributeSerializer] Compressed: '
+      //   '${attributes.length} items → ${bytes.length} bytes'
+      // );
 
       return Uint8List.fromList(bytes);
 
@@ -200,10 +203,11 @@ class ProductAttributeSerializer {
           .map((item) => Map<String, dynamic>.from(item as Map))
           .toList();
 
-      debugPrint(
-        '[ProductAttributeSerializer] Decompressed: '
-        '${compressedData.length} bytes → ${result.length} items'
-      );
+      // ⚡ PERFORMANCE: Comentado para evitar spam de logs al leer productos
+      // debugPrint(
+      //   '[ProductAttributeSerializer] Decompressed: '
+      //   '${compressedData.length} bytes → ${result.length} items'
+      // );
 
       return result;
 

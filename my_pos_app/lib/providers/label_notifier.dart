@@ -119,16 +119,46 @@ class Label extends _$Label {
     try {
       final box = _db!.store.box<LabelPrintItemCompact>();
 
-      // Eliminar todos los items actuales
-      box.removeAll();
+      // ⚡ FIX: Obtener todos los items existentes para preservar localIds
+      final existingQuery = box.query().build();
+      final existingItems = existingQuery.find();
+      existingQuery.close();
 
-      // Convertir y guardar los nuevos items
-      final compactItems = state.printQueue
-          .map((item) => _converter!.labelToCompact(item))
+      // Crear mapa de itemId -> ObjectBox localId
+      final existingLocalIds = <String, int>{};
+      for (final existing in existingItems) {
+        existingLocalIds[existing.itemId] = existing.localId;
+      }
+
+      // Convertir items y asignar localId si ya existen
+      final compactItems = state.printQueue.map((item) {
+        final compact = _converter!.labelToCompact(item);
+
+        // ⚡ FIX: Si ya existe, copiar el localId para actualizar
+        if (existingLocalIds.containsKey(compact.itemId)) {
+          compact.localId = existingLocalIds[compact.itemId]!;
+        }
+
+        return compact;
+      }).toList();
+
+      // ⚡ FIX: Guardar todos sin removeAll() para evitar race conditions
+      // putMany() actualizará existentes y creará nuevos
+      box.putMany(compactItems);
+
+      // ⚡ FIX: Eliminar items que ya no están en la cola
+      final currentItemIds = state.printQueue.map((i) => i.id).toSet();
+      final toRemove = existingItems
+          .where((e) => !currentItemIds.contains(e.itemId))
+          .map((e) => e.localId)
           .toList();
 
-      box.putMany(compactItems);
-      debugPrint("[Label] ✅ Saved ${compactItems.length} items to ObjectBox");
+      if (toRemove.isNotEmpty) {
+        box.removeMany(toRemove);
+        debugPrint("[Label] 🗑️ Removed ${toRemove.length} stale items from ObjectBox");
+      }
+
+      debugPrint("[Label] ✅ Saved ${compactItems.length} items to ObjectBox (${existingLocalIds.length} updated, ${compactItems.length - existingLocalIds.length} new)");
     } catch (e) {
       debugPrint("[Label] ❌ Error saving to ObjectBox: $e");
     }
@@ -257,6 +287,9 @@ class Label extends _$Label {
       quantity: originalItem.quantity,
       selectedVariants: Map.from(originalItem.selectedVariants),
       barcode: originalItem.barcode,
+      // ✅ FIX: Copiar campos cacheados para evitar errores al editar
+      cachedProductName: originalItem.cachedProductName,
+      cachedSku: originalItem.cachedSku,
       product: originalItem.product,
       resolvedVariant: originalItem.resolvedVariant,
     );

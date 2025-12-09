@@ -65,6 +65,10 @@ function mpbm_include_files_and_init_hooks() {
     // 🟢 NUEVO: Hooks mejorados para detectar TODOS los cambios de inventario
     require_once MPBM_PLUGIN_PATH . 'includes/product-change-hooks.php';
 
+    // ✅ BATCH OPERATIONS: Operaciones en lote para stock, precios y órdenes
+    require_once MPBM_PLUGIN_PATH . 'includes/class-mpbm-batch-operations.php';
+    MPBM_Batch_Operations_V2::get_instance();
+
     new MPBM_Ajax_Handler();
     new MPBM_Inventory_Logger();
 

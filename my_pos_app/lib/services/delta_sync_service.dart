@@ -111,6 +111,7 @@ class DeltaSyncService extends ChangeNotifier {
           // Verificar si necesitamos actualizar (comparar hash)
           final cachedHash = productHashCache[productId];
 
+          // Si el hash cambió o no tenemos hash, necesitamos descargar
           if (cachedHash != hash) {
             productIdsToFetch.add(productId);
           } else {
@@ -123,17 +124,17 @@ class DeltaSyncService extends ChangeNotifier {
 
       // 3. Fetch en batch solo los productos que cambiaron
       if (productIdsToFetch.isNotEmpty) {
-        final products = await _wooService.getProductsBatchV310(productIdsToFetch);
+        final productsData = await _wooService.getProductsBatchV310(productIdsToFetch);
 
-        debugPrint('[DeltaSync] Fetched ${products.length} products');
+        debugPrint('[DeltaSync] Fetched ${productsData.length} products');
 
         // Guardar productos y actualizar cache de hashes
-        for (final productData in products) {
-          await _saveProduct(productData);
+        for (final productMap in productsData) {
+          await _saveProduct(productMap);
 
           // Actualizar hash cache
-          final productId = productData['id'] as int;
-          final hash = _calculateProductHash(productData);
+          final productId = productMap['id'] as int;
+          final hash = _calculateProductHash(productMap);
           productHashCache[productId] = hash;
 
           _productsUpdated++;
@@ -212,6 +213,7 @@ class DeltaSyncService extends ChangeNotifier {
       'sku': productData['sku'],
       'price': productData['price'],
       'stock': productData['stock_quantity'],
+      'date_modified': productData['date_modified'], // Importante para detectar cambios
     };
 
     final dataString = jsonEncode(relevantData);
@@ -224,30 +226,28 @@ class DeltaSyncService extends ChangeNotifier {
   /// Guardar producto en base de datos local
   Future<void> _saveProduct(Map<String, dynamic> productData) async {
     try {
-      // TODO: Implementar guardado en base de datos local (ObjectBox o Hive)
-      // Por ahora, simplemente logeamos el producto
-      debugPrint('[DeltaSync] Saved product: ${productData['name']}');
+      // ✅ CORREGIDO: Convertir Map JSON a Objeto Product y guardar en ObjectBox
+      final product = Product.fromJson(productData);
 
-      // NOTA: Aquí deberías usar el ProductRepository para guardar el producto
-      // Ejemplo:
-      // final product = Product.fromJson(productData);
-      // await _productRepository.saveProduct(product);
+      await _storageService.cacheProduct(product,
+          fullAttributesWithOptions: product.fullAttributesWithOptions
+      );
+
+      debugPrint('[DeltaSync] Saved product: ${product.name} (ID: ${product.id})');
     } catch (e) {
-      debugPrint('[DeltaSync] Error saving product: $e');
+      debugPrint('[DeltaSync] ❌ Error saving product ID ${productData['id']}: $e');
     }
   }
 
   /// Eliminar producto de base de datos local
   Future<void> _deleteProduct(int productId) async {
     try {
-      // TODO: Implementar eliminación de base de datos local (ObjectBox o Hive)
-      debugPrint('[DeltaSync] Deleted product: $productId');
+      // ✅ CORREGIDO: Llamar a deleteProduct en StorageService
+      await _storageService.deleteProduct(productId.toString());
 
-      // NOTA: Aquí deberías usar el ProductRepository para eliminar el producto
-      // Ejemplo:
-      // await _productRepository.deleteProduct(productId);
+      debugPrint('[DeltaSync] Deleted product: $productId');
     } catch (e) {
-      debugPrint('[DeltaSync] Error deleting product: $e');
+      debugPrint('[DeltaSync] ❌ Error deleting product $productId: $e');
     }
   }
 

@@ -15,7 +15,6 @@ import '../providers/label_notifier.dart';
 import '../widgets/app_header.dart';
 import '../locator.dart';
 import '../utils/tspl_generator.dart';
-import '../services/tspl_batch_service.dart';
 
 /// ✓ FASE 2 RIVERPOD: Migrado a ConsumerStatefulWidget
 class ThermalPrintingScreen extends ConsumerStatefulWidget {
@@ -379,11 +378,11 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
   }
 
   /// ⚡ OPTIMIZACIÓN: Genera todos los comandos TSPL en background
-  /// Usa delays estratégicos y post frame callbacks para mantener UI responsive
+  /// Usa TsplGenerator con soporte completo de WYSIWYG
   Future<void> _generateCommandsInBackground() async {
     if (widget.printQueue.isEmpty || !mounted) return;
 
-    debugPrint('[ThermalPrinting] 🚀 Starting background command generation for ${widget.printQueue.length} items');
+    debugPrint('[ThermalPrinting] 🚀 Starting WYSIWYG command generation for ${widget.printQueue.length} items');
 
     // Actualizar UI inmediatamente
     if (mounted) {
@@ -395,83 +394,65 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
 
     try {
       // Dar tiempo al UI para renderizar el estado inicial
-      // ⚡ Delay mínimo de 500ms para que la barra de progreso sea visible
-      await Future.delayed(Duration(milliseconds: 500));
+      await Future.delayed(Duration(milliseconds: 100));
 
-      // Preparar datos de productos SIN bloquear UI
-      final productsData = <Map<String, dynamic>>[];
+      final labelState = ref.read(labelProvider);
 
+      // ⚡ FIX WYSIWYG: Usar settings completo con toda la configuración
+      final fullSettings = labelState.settings.copyWith(
+        density: _printDensity.round(),
+        speed: _printSpeed.round(),
+      );
+
+      debugPrint('[ThermalPrinting] 📐 Using WYSIWYG settings:');
+      debugPrint('[ThermalPrinting]   - Margins: T${fullSettings.marginTop} B${fullSettings.marginBottom} L${fullSettings.marginLeft} R${fullSettings.marginRight}');
+      debugPrint('[ThermalPrinting]   - Density: ${fullSettings.density}, Speed: ${fullSettings.speed}');
+      debugPrint('[ThermalPrinting]   - Visible: ${fullSettings.visibleAttributes}');
+      debugPrint('[ThermalPrinting]   - Field order: ${fullSettings.fieldOrder}');
+
+      final allCommandBytes = <int>[];
+
+      // Generar comandos para cada item usando TsplGenerator (con WYSIWYG completo)
       for (int i = 0; i < widget.printQueue.length; i++) {
         final item = widget.printQueue[i];
 
-        // Actualizar progreso de carga cada 5 items
-        if (mounted && i % 5 == 0 && i > 0) {
-          setState(() {
-            _generationProgress = (i / widget.printQueue.length) * 0.3; // 30% del progreso total
+        // Actualizar progreso
+        if (mounted) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              setState(() {
+                _generationProgress = (i + 1) / widget.printQueue.length;
+              });
+            }
           });
-          // Permitir que UI se actualice
-          await Future.delayed(Duration(milliseconds: 1));
         }
 
-        // Los datos ya están en caché (displayName, displaySku)
-        productsData.add({
-          'name': item.displayName,
-          'sku': item.displaySku,
-          'price': 0.0,
-          'barcode': item.barcode,
-          'quantity': item.quantity,
-        });
+        // ⚡ FIX WYSIWYG: Usar TsplGenerator.generateCommands() que respeta TODOS los ajustes
+        final itemBytes = await TsplGenerator.generateCommands(
+          item: item,
+          settings: fullSettings,
+          quantity: item.quantity,
+          density: _printDensity.round(),
+          speed: _printSpeed.round(),
+        );
+
+        allCommandBytes.addAll(itemBytes);
+
+        // Pequeño delay para mantener UI responsive
+        if (i % 5 == 0 && i > 0) {
+          await Future.delayed(Duration(milliseconds: 10));
+        }
       }
 
-      debugPrint('[ThermalPrinting] Prepared ${productsData.length} products, generating TSPL...');
+      // Convertir bytes a string para almacenamiento
+      final commandString = String.fromCharCodes(allCommandBytes);
 
-      // Actualizar estado antes de generar
-      if (mounted) {
-        setState(() {
-          _generationProgress = 0.3;
-        });
-      }
-
-      // Dar tiempo al UI para actualizar
-      await Future.delayed(Duration(milliseconds: 50));
-
-      final labelState = ref.read(labelProvider);
-      final settings = {
-        'width': labelState.settings.labelLayout['width'] ?? 50.0,
-        'height': labelState.settings.labelLayout['height'] ?? 38.0,
-        'density': _printDensity.round(),
-        'speed': _printSpeed.round(),
-        'showName': labelState.settings.visibleAttributes['productName'] ?? true,
-        'showSku': labelState.settings.visibleAttributes['sku'] ?? true,
-        'showPrice': labelState.settings.visibleAttributes['price'] ?? false,
-        'showBarcode': labelState.settings.visibleAttributes['barcode'] ?? true,
-      };
-
-      // Generar comandos en background con progreso
-      final commands = await TsplBatchService.generateBatchInBackground(
-        productsData: productsData,
-        settings: settings,
-        onProgress: (current, total) {
-          // Usar addPostFrameCallback para actualizar UI thread de forma segura
-          if (mounted) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted) {
-                setState(() {
-                  // Progreso de 30% a 100%
-                  _generationProgress = 0.3 + (current / total) * 0.7;
-                });
-              }
-            });
-          }
-        },
-      );
-
-      debugPrint('[ThermalPrinting] ✅ Generated ${commands.length} commands successfully');
+      debugPrint('[ThermalPrinting] ✅ Generated ${allCommandBytes.length} bytes with full WYSIWYG support');
 
       // Actualización final
       if (mounted) {
         setState(() {
-          _generatedCommands = commands;
+          _generatedCommands = [commandString]; // Un solo string con todos los comandos
           _isGeneratingCommands = false;
           _generationProgress = 1.0;
         });

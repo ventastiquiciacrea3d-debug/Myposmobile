@@ -122,10 +122,12 @@ class Scanner extends _$Scanner {
     );
 
     try {
+      // ✅ FIX: Usar búsqueda local primero (más rápida)
       final apiResponse = await _productRepository.searchProductsByTerm(
         trimmedQuery,
         page: 1,
         limit: _productsPerPage,
+        localOnly: true, // ✅ Solo buscar en BD local para velocidad instantánea
         onCachedResults: (cachedResults) {
           if (state.currentSearchQuery != trimmedQuery) return;
 
@@ -181,10 +183,12 @@ class Scanner extends _$Scanner {
     );
 
     try {
+      // ✅ FIX: Paginación también usa búsqueda local
       final apiResponse = await _productRepository.searchProductsByTerm(
         currentQuery,
         page: nextPage,
         limit: _productsPerPage,
+        localOnly: true, // ✅ Solo buscar en BD local
       );
 
       if (state.currentSearchQuery != (apiResponse['query'] ?? '')) return;

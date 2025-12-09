@@ -2,7 +2,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
 import 'package:uuid/uuid.dart';
-import 'package:intl/intl.dart';
 import 'package:collection/collection.dart';
 import 'product.dart' as app_product;
 
@@ -15,6 +14,18 @@ class LabelSettings {
   final Map<String, bool> visibleAttributes;
   final List<String> fieldOrder;
   final Map<String, Map<String, dynamic>> fieldLayouts;
+
+  // ⚡ NUEVOS CAMPOS: Configuración de impresora
+  final int density;      // 1-15 (oscuridad de impresión)
+  final int speed;        // 1-6 (velocidad de impresión)
+  final int direction;    // 0 o 1 (dirección de impresión)
+  final double gapMm;     // Gap entre etiquetas en mm
+
+  // ⚡ NUEVOS CAMPOS: Márgenes
+  final int marginTop;       // Margen superior en dots
+  final int marginBottom;    // Margen inferior en dots
+  final int marginLeft;      // Margen izquierdo en dots
+  final int marginRight;     // Margen derecho en dots
 
   const LabelSettings({
     this.printerResolutionDPI = 203,
@@ -36,6 +47,16 @@ class LabelSettings {
       'sku':         {'columns': 1, 'size': 'small', 'weight': 'normal', 'fit': 'truncate', 'spacing': 1.0, 'align': 'center'},
       'barcode':     {'columns': 1},
     },
+    // ⚡ Valores por defecto para configuración de impresora
+    this.density = 12,
+    this.speed = 4,
+    this.direction = 1,
+    this.gapMm = 3.0,
+    // ⚡ Valores por defecto para márgenes
+    this.marginTop = 15,
+    this.marginBottom = 15,
+    this.marginLeft = 15,
+    this.marginRight = 15,
   });
 
   LabelSettings copyWith({
@@ -44,6 +65,14 @@ class LabelSettings {
     Map<String, bool>? visibleAttributes,
     List<String>? fieldOrder,
     Map<String, Map<String, dynamic>>? fieldLayouts,
+    int? density,
+    int? speed,
+    int? direction,
+    double? gapMm,
+    int? marginTop,
+    int? marginBottom,
+    int? marginLeft,
+    int? marginRight,
   }) {
     return LabelSettings(
       printerResolutionDPI: printerResolutionDPI ?? this.printerResolutionDPI,
@@ -51,6 +80,14 @@ class LabelSettings {
       visibleAttributes: visibleAttributes ?? this.visibleAttributes,
       fieldOrder: fieldOrder ?? this.fieldOrder,
       fieldLayouts: fieldLayouts ?? this.fieldLayouts,
+      density: density ?? this.density,
+      speed: speed ?? this.speed,
+      direction: direction ?? this.direction,
+      gapMm: gapMm ?? this.gapMm,
+      marginTop: marginTop ?? this.marginTop,
+      marginBottom: marginBottom ?? this.marginBottom,
+      marginLeft: marginLeft ?? this.marginLeft,
+      marginRight: marginRight ?? this.marginRight,
     );
   }
 
@@ -60,6 +97,14 @@ class LabelSettings {
     'visibleAttributes': visibleAttributes,
     'fieldOrder': fieldOrder,
     'fieldLayouts': fieldLayouts,
+    'density': density,
+    'speed': speed,
+    'direction': direction,
+    'gapMm': gapMm,
+    'marginTop': marginTop,
+    'marginBottom': marginBottom,
+    'marginLeft': marginLeft,
+    'marginRight': marginRight,
   };
 
   factory LabelSettings.fromJson(Map<String, dynamic> json) {
@@ -91,6 +136,14 @@ class LabelSettings {
       visibleAttributes: {...defaultSettings.visibleAttributes, ...loadedAttributes},
       fieldOrder: (json['fieldOrder'] as List<dynamic>?)?.cast<String>() ?? defaultSettings.fieldOrder,
       fieldLayouts: {...defaultSettings.fieldLayouts, ...parsedFieldLayouts},
+      density: (json['density'] as num?)?.toInt() ?? defaultSettings.density,
+      speed: (json['speed'] as num?)?.toInt() ?? defaultSettings.speed,
+      direction: (json['direction'] as num?)?.toInt() ?? defaultSettings.direction,
+      gapMm: (json['gapMm'] as num?)?.toDouble() ?? defaultSettings.gapMm,
+      marginTop: (json['marginTop'] as num?)?.toInt() ?? defaultSettings.marginTop,
+      marginBottom: (json['marginBottom'] as num?)?.toInt() ?? defaultSettings.marginBottom,
+      marginLeft: (json['marginLeft'] as num?)?.toInt() ?? defaultSettings.marginLeft,
+      marginRight: (json['marginRight'] as num?)?.toInt() ?? defaultSettings.marginRight,
     );
   }
 }
@@ -142,6 +195,11 @@ class LabelPrintItem extends HiveObject {
     final brandName = brandAttribute?['option'] as String? ?? '';
     // --- FIN DE LA CORRECCIÓN ---
 
+    // ⚡ FIX: Formatear fecha manualmente para evitar LocaleDataException en isolates
+    // DateFormat('dd/MM/yy', 'es_CR') no funciona dentro de compute() porque el locale no está inicializado
+    final now = DateTime.now();
+    final formattedDate = '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${(now.year % 100).toString().padLeft(2, '0')}';
+
     return SerializableLabelData(
       displayName: displayName,
       displaySku: displaySku,
@@ -150,7 +208,7 @@ class LabelPrintItem extends HiveObject {
       brand: brandName,
       barcode: barcode ?? displaySku,
       lotNumber: lotNumber,
-      date: DateFormat('dd/MM/yy', 'es_CR').format(DateTime.now()),
+      date: formattedDate,
     );
   }
 }

@@ -110,10 +110,26 @@ class ProductConverterService {
       return brand.id;
     }
 
-    // Crear nuevo
-    brand = BrandDictionary(name: brandName, logoFilename: null);
-    brandBox.put(brand);
-    return brand.id;
+    // ⚡ FIX: Intentar crear, pero manejar race condition
+    try {
+      // Crear nuevo
+      brand = BrandDictionary(name: brandName, logoFilename: null);
+      brandBox.put(brand);
+      return brand.id;
+    } catch (e) {
+      // ⚡ FIX: Si falla (posible constraint violation por race condition),
+      // buscar de nuevo - otro thread pudo haber creado la marca
+      final retryQuery = brandBox.query(BrandDictionary_.name.equals(brandName)).build();
+      brand = retryQuery.findFirst();
+      retryQuery.close();
+
+      if (brand != null) {
+        return brand.id;
+      }
+
+      // Si aún no existe, re-lanzar el error original
+      rethrow;
+    }
   }
 
   int _getOrCreateCategoryId(String categoryName) {

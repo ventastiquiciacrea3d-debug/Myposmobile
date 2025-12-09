@@ -15,6 +15,7 @@ import '../providers/app_state_notifier.dart';
 import '../providers/order_notifier.dart';
 import '../services/storage_service.dart';
 import '../services/sync_manager.dart';
+import '../services/product_sync_service.dart';
 import '../locator.dart';
 
 import '../widgets/app_header.dart';
@@ -482,6 +483,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 }
               },
             ),
+                // ✅ NUEVO: Sección de descarga manual de productos
+                (ctx, sm) => const _ProductDownloadSection(),
                 (ctx, sm) => _ScannerSettingsSection(
               prefs: prefs,
               manualScanModeEnabled: _manualScanModeEnabled,
@@ -1059,5 +1062,361 @@ class _AccountSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Card( elevation: 1, shape: RoundedRectangleBorder( borderRadius: BorderRadius.circular(8), ), child: Padding( padding: const EdgeInsets.all(16), child: Column( crossAxisAlignment: CrossAxisAlignment.start, children: [ Row( children: const [ Icon(Icons.account_circle), SizedBox(width: 8), Text( 'Cuenta y Datos', style: TextStyle( fontSize: 18, fontWeight: FontWeight.bold, ), ), ], ), const SizedBox(height: 16), SizedBox( width: double.infinity, child: OutlinedButton.icon( icon: const Icon(Icons.logout), label: const Text('CERRAR SESIÓN'), onPressed: onLogout, style: OutlinedButton.styleFrom( foregroundColor: Colors.orange.shade800, side: BorderSide(color: Colors.orange.shade800), ), ), ), const SizedBox(height: 12), SizedBox( width: double.infinity, child: OutlinedButton.icon( icon: const Icon(Icons.delete_forever_outlined), label: const Text('REINICIAR APLICACIÓN'), onPressed: onReset, style: OutlinedButton.styleFrom( foregroundColor: Colors.red, side: const BorderSide(color: Colors.red)), ), ), Padding( padding: const EdgeInsets.only(top: 8.0), child: Text("Elimina credenciales y todos los datos locales.", style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey.shade600)), ) ], ), ), );
+  }
+}
+
+// ✅ NUEVO: Sección para descargar todos los productos manualmente
+class _ProductDownloadSection extends StatefulWidget {
+  const _ProductDownloadSection();
+
+  @override
+  State<_ProductDownloadSection> createState() => _ProductDownloadSectionState();
+}
+
+class _ProductDownloadSectionState extends State<_ProductDownloadSection> {
+  Map<String, int>? _localStats;
+  bool _isLoadingStats = true;
+  bool _isSyncing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadLocalStats();
+  }
+
+  Future<void> _loadLocalStats() async {
+    if (mounted) setState(() => _isLoadingStats = true);
+    try {
+      final syncService = getIt<ProductSyncService>();
+      final stats = await syncService.getLocalStats();
+      if (mounted) setState(() => _localStats = stats);
+    } catch (e) {
+      debugPrint('[ProductDownload] Error loading stats: $e');
+    } finally {
+      if (mounted) setState(() => _isLoadingStats = false);
+    }
+  }
+
+  Future<void> _downloadAllProducts() async {
+    debugPrint('[ProductDownload] 📥 Download button pressed');
+    if (_isSyncing) return;
+
+    debugPrint('[ProductDownload] Showing confirmation dialog');
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Descargar Productos'),
+        content: const Text(
+          '¿Descargar TODOS los productos de WooCommerce?\n\n'
+          'Esto puede tomar varios minutos dependiendo de cuántos productos tenga tu tienda.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('CANCELAR'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('DESCARGAR'),
+          ),
+        ],
+      ),
+    );
+
+    debugPrint('[ProductDownload] Confirm result: $confirm, mounted: $mounted');
+    if (confirm != true || !mounted) return;
+
+    debugPrint('[ProductDownload] User confirmed, setting syncing = true');
+    if (mounted) setState(() => _isSyncing = true);
+
+    // Show progress dialog
+    debugPrint('[ProductDownload] Showing progress dialog');
+    if (mounted) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => _DownloadProgressDialog(
+          onComplete: () async {
+            Navigator.pop(dialogContext);
+            if (mounted) {
+              setState(() => _isSyncing = false);
+              await _loadLocalStats();
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('¡Productos descargados exitosamente!'),
+                    backgroundColor: Colors.green,
+                  ),
+                );
+              }
+            }
+          },
+          onError: (error) {
+            Navigator.pop(dialogContext);
+            if (mounted) {
+              setState(() => _isSyncing = false);
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Error: $error'),
+                  backgroundColor: Colors.red,
+                ),
+              );
+            }
+          },
+        ),
+      );
+    }
+  }
+
+  Future<void> _clearCache() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Limpiar Caché'),
+        content: const Text(
+          '¿Eliminar TODOS los productos descargados?\n\n'
+          'Deberás descargarlos nuevamente para usar la app offline.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('CANCELAR'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('ELIMINAR'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true || !mounted) return;
+
+    try {
+      final syncService = getIt<ProductSyncService>();
+      await syncService.clearProductCache();
+      await _loadLocalStats();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Caché de productos eliminada'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 1,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.cloud_download_outlined),
+                const SizedBox(width: 8),
+                const Text(
+                  'Descarga de Productos',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Descarga todos los productos de tu tienda para trabajar offline.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey.shade600),
+            ),
+            const SizedBox(height: 16),
+
+            // Stats
+            if (_isLoadingStats)
+              const Center(child: CircularProgressIndicator())
+            else if (_localStats != null) ...[
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.blue.shade200),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.storage, color: Colors.blue.shade700, size: 20),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Base de Datos Local',
+                          style: TextStyle(
+                            color: Colors.blue.shade700,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text('Total: ${_localStats!['total']} productos'),
+                    Text('  • Simples: ${_localStats!['simple']}'),
+                    Text('  • Variables: ${_localStats!['variable']}'),
+                    Text('  • Variaciones: ${_localStats!['variations']}'),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
+
+            // Download button
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _isSyncing ? null : _downloadAllProducts,
+                icon: _isSyncing
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      )
+                    : const Icon(Icons.cloud_download),
+                label: Text(_isSyncing ? 'DESCARGANDO...' : 'DESCARGAR TODOS LOS PRODUCTOS'),
+              ),
+            ),
+
+            // Clear cache button
+            if (_localStats != null && _localStats!['total']! > 0) ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _isSyncing ? null : _clearCache,
+                  icon: const Icon(Icons.delete_outline),
+                  label: const Text('LIMPIAR CACHÉ DE PRODUCTOS'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.orange.shade800,
+                    side: BorderSide(color: Colors.orange.shade800),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// Dialog para mostrar progreso de descarga
+class _DownloadProgressDialog extends StatefulWidget {
+  final VoidCallback onComplete;
+  final Function(String) onError;
+
+  const _DownloadProgressDialog({
+    required this.onComplete,
+    required this.onError,
+  });
+
+  @override
+  State<_DownloadProgressDialog> createState() => _DownloadProgressDialogState();
+}
+
+class _DownloadProgressDialogState extends State<_DownloadProgressDialog> {
+  int _current = 0;
+  int _total = 0;
+  String _status = 'Iniciando...';
+  bool _hasError = false;
+
+  @override
+  void initState() {
+    super.initState();
+    debugPrint('[_DownloadProgressDialog] initState() - Starting download...');
+    _startDownload();
+  }
+
+  Future<void> _startDownload() async {
+    debugPrint('[_DownloadProgressDialog] _startDownload() called');
+    try {
+      debugPrint('[_DownloadProgressDialog] Getting ProductSyncService from GetIt');
+      final syncService = getIt<ProductSyncService>();
+      debugPrint('[_DownloadProgressDialog] Got service: $syncService');
+
+      final downloaded = await syncService.syncAllProducts(
+        onProgress: (current, total, status) {
+          if (mounted) {
+            setState(() {
+              _current = current;
+              _total = total;
+              _status = status;
+            });
+          }
+        },
+      );
+
+      debugPrint('[ProductDownload] Downloaded $downloaded products');
+      widget.onComplete();
+    } catch (e) {
+      debugPrint('[ProductDownload] Error: $e');
+      if (mounted) {
+        setState(() {
+          _hasError = true;
+          _status = 'Error: ${e.toString()}';
+        });
+      }
+      widget.onError(e.toString());
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final progress = _total > 0 ? _current / _total : 0.0;
+
+    return AlertDialog(
+      title: Row(
+        children: [
+          if (!_hasError)
+            const SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          else
+            const Icon(Icons.error, color: Colors.red),
+          const SizedBox(width: 12),
+          const Text('Descargando Productos'),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (_total > 0) ...[
+            LinearProgressIndicator(value: progress),
+            const SizedBox(height: 12),
+            Text(
+              '$_current / $_total productos',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ] else
+            const LinearProgressIndicator(),
+          const SizedBox(height: 8),
+          Text(_status),
+        ],
+      ),
+    );
   }
 }

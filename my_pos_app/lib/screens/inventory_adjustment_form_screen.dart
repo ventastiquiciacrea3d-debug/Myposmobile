@@ -423,10 +423,20 @@ class _InventoryAdjustmentFormScreenState
       }
       _searchResultsNotifier.value = [];
 
-      if (product.isVariable) {
-        _currentResolvedVariant = null;
-        _currentSelectedAttributes.clear();
-        if (product.fullAttributesWithOptions != null && product.fullAttributesWithOptions!.isNotEmpty) {
+      // ⚡ FIX: Determinar si el producto puede ser usado directamente
+      bool canUseDirectly = false;
+      _currentSelectedAttributes.clear();
+
+      if (product.isSimple) {
+        // Productos simples siempre se pueden usar directamente
+        canUseDirectly = true;
+      } else if (product.isVariable) {
+        // Si es variable pero no tiene opciones configurables, tratarlo como simple
+        if (product.fullAttributesWithOptions == null || product.fullAttributesWithOptions!.isEmpty) {
+          canUseDirectly = true;
+          debugPrint("[InventoryAdjustmentFormScreen] Producto variable sin opciones configurables - tratando como simple");
+        } else {
+          // Tiene opciones - cargar los atributos para selección
           for (var attrDef in product.fullAttributesWithOptions!) {
             final String? uiName = attrDef['name']?.toString();
             final List<String> opts = (attrDef['options'] as List<dynamic>?)
@@ -440,14 +450,12 @@ class _InventoryAdjustmentFormScreenState
               _currentSelectedAttributes[slug] = null;
             }
           }
-          _currentProductError = null;
-        } else {
-          _currentProductError = "Este producto variable no tiene opciones de atributos configurables.";
         }
-      } else {
-        _currentResolvedVariant = product;
-        _currentProductError = null;
       }
+
+      // Configurar _currentResolvedVariant según si puede usarse directamente
+      _currentResolvedVariant = canUseDirectly ? product : null;
+      _currentProductError = null;
 
       final productForStock = _currentResolvedVariant ?? _currentFoundProduct;
       if (productForStock != null) {
@@ -508,7 +516,14 @@ class _InventoryAdjustmentFormScreenState
       try { _cameraScannerController!.dispose(); } catch (e) { if (kDebugMode) print("Error disposing existing camera controller: $e"); }
       _cameraScannerController = null;
     }
-    _cameraScannerController = MobileScannerController( detectionSpeed: DetectionSpeed.normal, facing: CameraFacing.back, torchEnabled: false, detectionTimeoutMs: 2000, );
+    // ✅ FIX: Eliminar detectionTimeoutMs para permitir escaneo continuo
+    // y configurar returnImage: false para mejor rendimiento
+    _cameraScannerController = MobileScannerController(
+      detectionSpeed: DetectionSpeed.normal,
+      facing: CameraFacing.back,
+      torchEnabled: false,
+      returnImage: false, // No necesitamos la imagen, solo el código
+    );
     String? result;
     bool popped = false;
     bool isTorchOn = false;
@@ -530,16 +545,37 @@ class _InventoryAdjustmentFormScreenState
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12.0),
                   child: MobileScanner(
-                    key: ValueKey('inventory_adj_scanner_${DateTime.now().millisecondsSinceEpoch}'),
+                    key: const ValueKey('inventory_adj_scanner'), // ✅ FIX: Usar clave constante
                     controller: _cameraScannerController!,
                     onDetect: (capture) {
-                      if (popped || !mounted || !Navigator.of(dialogContext).canPop()) return;
-                      final firstValidBarcode = capture.barcodes.firstWhere((b) => b.rawValue != null && b.rawValue!.isNotEmpty, orElse: () => const Barcode(rawValue: null));
+                      // ✅ FIX: Agregar logging para depuración
+                      if (kDebugMode) print("[InventoryAdjustment] Barcode detected: ${capture.barcodes.length} codes");
+
+                      if (popped || !mounted || !Navigator.of(dialogContext).canPop()) {
+                        if (kDebugMode) print("[InventoryAdjustment] Ignoring barcode - dialog already closed");
+                        return;
+                      }
+
+                      final firstValidBarcode = capture.barcodes.firstWhere(
+                        (b) => b.rawValue != null && b.rawValue!.isNotEmpty,
+                        orElse: () => const Barcode(rawValue: null)
+                      );
+
                       if (firstValidBarcode.rawValue != null) {
+                        if (kDebugMode) print("[InventoryAdjustment] Valid barcode found: ${firstValidBarcode.rawValue}");
                         result = firstValidBarcode.rawValue;
-                        _cameraScannerController?.stop().catchError((e) => print("Error stopping camera in onDetect: $e"));
                         popped = true;
-                        if (Navigator.of(dialogContext).canPop()) Navigator.of(dialogContext).pop(result);
+
+                        // ✅ FIX: Detener el escáner antes de cerrar el diálogo
+                        _cameraScannerController?.stop().catchError((e) {
+                          if (kDebugMode) print("Error stopping camera in onDetect: $e");
+                        });
+
+                        if (Navigator.of(dialogContext).canPop()) {
+                          Navigator.of(dialogContext).pop(result);
+                        }
+                      } else {
+                        if (kDebugMode) print("[InventoryAdjustment] No valid barcode in capture");
                       }
                     },
                     errorBuilder: (context, error) {
@@ -554,15 +590,84 @@ class _InventoryAdjustmentFormScreenState
               actionsAlignment: MainAxisAlignment.spaceBetween,
               actionsPadding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
               actions: <Widget>[
-                IconButton(
-                  icon: Icon(isTorchOn ? Icons.flash_on_rounded : Icons.flash_off_rounded, color: isTorchOn ? Colors.amber.shade600 : Theme.of(dialogContext).iconTheme.color),
-                  tooltip: "Linterna",
-                  onPressed: () async {
-                    await _cameraScannerController?.toggleTorch();
-                    setDialogState(() {
-                      isTorchOn = !isTorchOn;
-                    });
-                  },
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      icon: Icon(isTorchOn ? Icons.flash_on_rounded : Icons.flash_off_rounded, color: isTorchOn ? Colors.amber.shade600 : Theme.of(dialogContext).iconTheme.color),
+                      tooltip: "Linterna",
+                      onPressed: () async {
+                        await _cameraScannerController?.toggleTorch();
+                        setDialogState(() {
+                          isTorchOn = !isTorchOn;
+                        });
+                      },
+                    ),
+                    const SizedBox(width: 8),
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.keyboard, size: 18),
+                      label: const Text('CAPTURA MANUAL'),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      ),
+                      onPressed: () async {
+                        if (popped || !mounted || !Navigator.of(dialogContext).canPop()) return;
+                        popped = true;
+                        await _cameraScannerController?.stop();
+
+                        if (!mounted || !Navigator.of(dialogContext).canPop()) return;
+
+                        // Mostrar diálogo de captura manual
+                        final manualCode = await showDialog<String>(
+                          context: dialogContext,
+                          builder: (context) {
+                            final controller = TextEditingController();
+                            return AlertDialog(
+                              title: const Text('Captura Manual'),
+                              content: TextField(
+                                controller: controller,
+                                autofocus: true,
+                                decoration: const InputDecoration(
+                                  labelText: 'Ingrese SKU o Código',
+                                  border: OutlineInputBorder(),
+                                ),
+                                onSubmitted: (value) {
+                                  if (value.trim().isNotEmpty) {
+                                    Navigator.of(context).pop(value.trim());
+                                  }
+                                },
+                              ),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.of(context).pop(),
+                                  child: const Text('CANCELAR'),
+                                ),
+                                ElevatedButton(
+                                  onPressed: () {
+                                    if (controller.text.trim().isNotEmpty) {
+                                      Navigator.of(context).pop(controller.text.trim());
+                                    }
+                                  },
+                                  child: const Text('ACEPTAR'),
+                                ),
+                              ],
+                            );
+                          },
+                        );
+
+                        if (manualCode != null && manualCode.isNotEmpty) {
+                          result = manualCode;
+                          if (mounted && Navigator.of(dialogContext).canPop()) {
+                            Navigator.of(dialogContext).pop(result);
+                          }
+                        } else {
+                          if (mounted && Navigator.of(dialogContext).canPop()) {
+                            Navigator.of(dialogContext).pop();
+                          }
+                        }
+                      },
+                    ),
+                  ],
                 ),
                 TextButton(
                   child: const Text('CERRAR', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -614,15 +719,69 @@ class _InventoryAdjustmentFormScreenState
     final allAttributesSelected = _configurableAttributesUI.every((attr) => _currentSelectedAttributes[attr['slug']] != null);
 
     if (allAttributesSelected) {
-      final matchingVariant = _availableVariations.firstWhereOrNull((variant) {
-        return _currentSelectedAttributes.entries.every((selectedAttr) {
-          final selectedKey = selectedAttr.key;
-          final selectedValue = selectedAttr.value;
-          return variant.attributes?.any((variantAttr) =>
-          (variantAttr['slug'] == selectedKey || variantAttr['name'] == selectedKey) && variantAttr['option'] == selectedValue
-          ) ?? false;
-        });
+      debugPrint("[InventoryAdjustment] 🔍 BUSCANDO VARIANTE:");
+      debugPrint("[InventoryAdjustment] 🔍 _currentSelectedAttributes: $_currentSelectedAttributes");
+      debugPrint("[InventoryAdjustment] 🔍 _availableVariations.length: ${_availableVariations.length}");
+
+      // ⚡ FIX: Normalizar atributos seleccionados (espacios → guiones, minúsculas, trim)
+      final normalizedSelected = <String, String>{};
+      _currentSelectedAttributes.forEach((key, value) {
+        if (value != null) {
+          final normalizedKey = key.replaceAll(' ', '-').toLowerCase().trim();
+          final normalizedValue = value.toLowerCase().trim();
+          normalizedSelected[normalizedKey] = normalizedValue;
+        }
       });
+
+      debugPrint("[InventoryAdjustment] 🔧 Atributos normalizados: $normalizedSelected");
+
+      app_product.Product? matchingVariant;
+      for (final variant in _availableVariations) {
+        if (variant.attributes == null) continue;
+
+        debugPrint("[InventoryAdjustment] 🔍 Probando variante ${variant.id}:");
+        debugPrint("[InventoryAdjustment] 🔍   Atributos: ${variant.attributes}");
+
+        bool allMatch = true;
+        for (final selectedEntry in normalizedSelected.entries) {
+          final selectedKey = selectedEntry.key;
+          final selectedValue = selectedEntry.value;
+
+          debugPrint("[InventoryAdjustment] 🔍   Buscando match para: $selectedKey = $selectedValue");
+
+          // Buscar un atributo de la variante que coincida
+          bool foundMatch = false;
+          for (final variantAttr in variant.attributes!) {
+            final variantNameRaw = variantAttr['name']?.toString();
+            final variantSlugRaw = variantAttr['slug']?.toString();
+            final variantOptionRaw = variantAttr['option']?.toString();
+
+            final variantName = variantNameRaw?.replaceAll(' ', '-').toLowerCase().trim();
+            final variantSlug = variantSlugRaw?.replaceAll(' ', '-').toLowerCase().trim();
+            final variantOption = variantOptionRaw?.toLowerCase().trim();
+
+            debugPrint("[InventoryAdjustment] 🔍     Comparando con: name=$variantName, slug=$variantSlug, option=$variantOption");
+
+            if ((variantName == selectedKey || variantSlug == selectedKey) && variantOption == selectedValue) {
+              debugPrint("[InventoryAdjustment] ✅     MATCH!");
+              foundMatch = true;
+              break;
+            }
+          }
+
+          if (!foundMatch) {
+            debugPrint("[InventoryAdjustment] ❌     NO MATCH para $selectedKey = $selectedValue");
+            allMatch = false;
+            break;
+          }
+        }
+
+        if (allMatch) {
+          debugPrint("[InventoryAdjustment] ✅ VARIANTE ENCONTRADA: ${variant.id}");
+          matchingVariant = variant;
+          break;
+        }
+      }
 
       setState(() {
         _currentResolvedVariant = matchingVariant;
@@ -1535,12 +1694,33 @@ class _InventoryAdjustmentFormScreenState
       final String attributeUiName = attrDef['name'] as String? ?? 'Atributo';
       final String attributeSlug = attrDef['slug'] as String? ?? attributeUiName.toLowerCase().replaceAll(' ', '-');
 
-      final List<String> options = (attrDef['options'] as List<dynamic>?)
-          ?.map((o) => o.toString())
-          .where((o) => o.isNotEmpty)
-          .toList() ?? [];
+      // ⚡ FIX: Extraer opciones desde las variaciones disponibles en lugar de usar IDs
+      // Las variaciones tienen el formato correcto: {"name":"Color","option":"Rojo","slug":"pa_color"}
+      final Set<String> optionsSet = {};
+
+      for (final variation in _availableVariations) {
+        if (variation.attributes != null) {
+          for (final variantAttr in variation.attributes!) {
+            final variantSlug = variantAttr['slug']?.toString().toLowerCase().trim();
+            final variantOption = variantAttr['option']?.toString().trim();
+
+            if (variantSlug == attributeSlug.toLowerCase() && variantOption != null && variantOption.isNotEmpty) {
+              optionsSet.add(variantOption);
+            }
+          }
+        }
+      }
+
+      final List<String> options = optionsSet.toList()..sort();
+
+      debugPrint("[InventoryAdjustment] 🎨 Atributo '$attributeUiName' ($attributeSlug) tiene ${options.length} opciones: $options");
 
       final String? currentSelectionForThisAttr = _currentSelectedAttributes[attributeSlug];
+
+      // ⚡ FIX: Validar que el valor seleccionado exista en las opciones
+      final String? validatedValue = (currentSelectionForThisAttr != null && options.contains(currentSelectionForThisAttr))
+          ? currentSelectionForThisAttr
+          : null;
 
       if (options.isEmpty) {
         return const SizedBox.shrink();
@@ -1555,7 +1735,7 @@ class _InventoryAdjustmentFormScreenState
                 isDense: true,
                 contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14)
             ),
-            value: currentSelectionForThisAttr,
+            value: validatedValue,
             hint: const Text("Seleccionar...", style: TextStyle(fontSize: 14)),
             isExpanded: true,
             items: options.map((option) => DropdownMenuItem(

@@ -17,6 +17,7 @@ const String notifyLowStockPrefKey = 'notify_low_stock';
 const String syncIntervalPrefKey = 'sync_interval';
 const String scannerVibrationPrefKey = 'scanner_vibration';
 const String scannerSoundPrefKey = 'scanner_sound';
+const String allowChangeVariationAfterScanPrefKey = 'allow_change_variation_after_scan';
 const String labelSettingsPrefKey = 'label_settings';
 const String lastConnectedPrinterPrefKey = 'last_connected_printer';
 

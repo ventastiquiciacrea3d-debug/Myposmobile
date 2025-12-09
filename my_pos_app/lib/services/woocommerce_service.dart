@@ -207,8 +207,21 @@ class WooCommerceService {
       throw AuthenticationException("No hay token de refresco disponible. Se requiere vincular de nuevo.");
     }
 
+    // ⚡ FIX: Obtener URL de storage para mayor robustez
+    final String? apiUrl = await _storageService.getApiUrl();
+    if (apiUrl == null || apiUrl.isEmpty) {
+      throw AuthenticationException("URL de la API no configurada.");
+    }
+
+    String sanitizedUrl = apiUrl.trim();
+    if (!sanitizedUrl.endsWith('/')) { sanitizedUrl += '/'; }
+    if (!sanitizedUrl.startsWith('http://') && !sanitizedUrl.startsWith('https://')) {
+      sanitizedUrl = 'https://$sanitizedUrl';
+    }
+
     try {
-      final tempDio = Dio(BaseOptions(baseUrl: _dio.options.baseUrl, responseType: ResponseType.plain));
+      // ⚡ FIX: Usar apiUrl desde storage en lugar de _dio.options.baseUrl
+      final tempDio = Dio(BaseOptions(baseUrl: sanitizedUrl, responseType: ResponseType.plain));
       final response = await tempDio.post(
         'wp-json/mypos/v1/refresh-token',
         data: {'refresh_token': refreshToken},
@@ -243,8 +256,17 @@ class WooCommerceService {
       throw AuthenticationException("URL de la API o Clave Maestra del Plugin no configuradas.");
     }
 
+    // ⚡ FIX: Sanitizar la URL antes de usarla
+    String sanitizedUrl = apiUrl.trim();
+    if (!sanitizedUrl.endsWith('/')) { sanitizedUrl += '/'; }
+    if (!sanitizedUrl.startsWith('http://') && !sanitizedUrl.startsWith('https://')) {
+      sanitizedUrl = 'https://$sanitizedUrl';
+    }
+
     try {
-      final tempDio = Dio(BaseOptions(baseUrl: _dio.options.baseUrl, responseType: ResponseType.plain));
+      // ⚡ FIX: Usar apiUrl desde storage en lugar de _dio.options.baseUrl
+      // Esto permite que funcione antes de que initializeDioClient() sea llamado
+      final tempDio = Dio(BaseOptions(baseUrl: sanitizedUrl, responseType: ResponseType.plain));
       final response = await tempDio.post(
           'wp-json/mypos/v1/register-device',
           data: {
