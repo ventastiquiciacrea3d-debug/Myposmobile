@@ -544,47 +544,94 @@ class _InventoryAdjustmentFormScreenState
                 height: MediaQuery.of(dialogContext).size.height * 0.45,
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12.0),
-                  child: MobileScanner(
-                    key: const ValueKey('inventory_adj_scanner'), // ✅ FIX: Usar clave constante
-                    controller: _cameraScannerController!,
-                    onDetect: (capture) {
-                      // ✅ FIX: Agregar logging para depuración
-                      if (kDebugMode) print("[InventoryAdjustment] Barcode detected: ${capture.barcodes.length} codes");
+                  child: _cameraScannerController != null
+                    ? MobileScanner(
+                        key: const ValueKey('inventory_adj_scanner'),
+                        controller: _cameraScannerController!,
+                        onDetect: (capture) {
+                          // ✅ FIX: Verificar que el controlador aún existe y el diálogo está abierto
+                          if (_cameraScannerController == null || popped || !mounted || !Navigator.of(dialogContext).canPop()) {
+                            if (kDebugMode) print("[InventoryAdjustment] Ignoring barcode - controller disposed or dialog closed");
+                            return;
+                          }
 
-                      if (popped || !mounted || !Navigator.of(dialogContext).canPop()) {
-                        if (kDebugMode) print("[InventoryAdjustment] Ignoring barcode - dialog already closed");
-                        return;
-                      }
+                          if (kDebugMode) print("[InventoryAdjustment] Barcode detected: ${capture.barcodes.length} codes");
 
-                      final firstValidBarcode = capture.barcodes.firstWhere(
-                        (b) => b.rawValue != null && b.rawValue!.isNotEmpty,
-                        orElse: () => const Barcode(rawValue: null)
-                      );
+                          final firstValidBarcode = capture.barcodes.firstWhere(
+                            (b) => b.rawValue != null && b.rawValue!.isNotEmpty,
+                            orElse: () => const Barcode(rawValue: null)
+                          );
 
-                      if (firstValidBarcode.rawValue != null) {
-                        if (kDebugMode) print("[InventoryAdjustment] Valid barcode found: ${firstValidBarcode.rawValue}");
-                        result = firstValidBarcode.rawValue;
-                        popped = true;
+                          if (firstValidBarcode.rawValue != null) {
+                            if (kDebugMode) print("[InventoryAdjustment] Valid barcode found: ${firstValidBarcode.rawValue}");
+                            result = firstValidBarcode.rawValue;
+                            popped = true;
 
-                        // ✅ FIX: Detener el escáner antes de cerrar el diálogo
-                        _cameraScannerController?.stop().catchError((e) {
-                          if (kDebugMode) print("Error stopping camera in onDetect: $e");
-                        });
+                            // ✅ FIX: Detener el escáner antes de cerrar el diálogo
+                            _cameraScannerController?.stop().catchError((e) {
+                              if (kDebugMode) print("Error stopping camera in onDetect: $e");
+                            });
 
-                        if (Navigator.of(dialogContext).canPop()) {
-                          Navigator.of(dialogContext).pop(result);
-                        }
-                      } else {
-                        if (kDebugMode) print("[InventoryAdjustment] No valid barcode in capture");
-                      }
-                    },
-                    errorBuilder: (context, error) {
-                      return Center(child: Padding(
-                        padding: const EdgeInsets.all(12.0),
-                        child: Text("Error de cámara: ${error.errorCode.name}.\nVerifique permisos y reinicie.", style: const TextStyle(color: Colors.red, fontSize: 13), textAlign: TextAlign.center),
-                      ));
-                    },
-                  ),
+                            if (Navigator.of(dialogContext).canPop()) {
+                              Navigator.of(dialogContext).pop(result);
+                            }
+                          } else {
+                            if (kDebugMode) print("[InventoryAdjustment] No valid barcode in capture");
+                          }
+                        },
+                        errorBuilder: (context, error) {
+                          // ✅ MEJORA SUGERIDA: errorBuilder más robusto para evitar crashes
+                          return Container(
+                            color: Colors.black87,
+                            child: Center(
+                              child: Padding(
+                                padding: const EdgeInsets.all(16.0),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(
+                                      Icons.error_outline,
+                                      color: Colors.red,
+                                      size: 48,
+                                    ),
+                                    const SizedBox(height: 12),
+                                    Text(
+                                      "Error de cámara",
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      error.errorCode.name,
+                                      style: const TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: 13,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                    const SizedBox(height: 16),
+                                    ElevatedButton.icon(
+                                      icon: const Icon(Icons.refresh),
+                                      label: const Text('Reintentar'),
+                                      onPressed: () {
+                                        if (Navigator.of(context).canPop()) {
+                                          Navigator.of(context).pop();
+                                        }
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      )
+                    : const Center(
+                        child: CircularProgressIndicator(),
+                      ),
                 ),
               ),
               actionsAlignment: MainAxisAlignment.spaceBetween,
