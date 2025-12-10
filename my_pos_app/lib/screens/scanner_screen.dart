@@ -34,6 +34,7 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
   bool _hideImagesInSearch = false;
   String _currentSearchQueryForDebounce = '';
   int _currentBottomNavIndex = 0;
+  bool _isCameraPausedManually = false; // ✅ MEJORA: Estado de pausa manual
 
   StreamSubscription? _rapidScanSubscription;
   StreamSubscription? _notificationSubscription;
@@ -89,11 +90,63 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
     setState(() {});
   }
 
+  // ✅ MEJORA: Método para pausar/reanudar cámara manualmente
+  void _toggleCameraPause() {
+    if (!mounted) return;
+
+    final scannerNotifier = ref.read(scannerProvider.notifier);
+    final scannerController = scannerNotifier.scannerService.controller;
+
+    if (scannerController == null) return;
+
+    setState(() {
+      _isCameraPausedManually = !_isCameraPausedManually;
+    });
+
+    try {
+      if (_isCameraPausedManually) {
+        debugPrint("[ScannerScreen] 🔴 Manual pause - stopping camera");
+        scannerController.stop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Cámara pausada'),
+            duration: Duration(seconds: 1),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      } else {
+        debugPrint("[ScannerScreen] 🟢 Manual resume - starting camera");
+        scannerController.start();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Cámara reanudada'),
+            duration: Duration(seconds: 1),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint("[ScannerScreen] ⚠️ Error toggling camera: $e");
+    }
+  }
+
   void _showProductBottomSheet(Product product) {
     if (!mounted) return;
 
-    // No resetear aún - el bottom sheet se mostrará sobre la pantalla de "Producto encontrado..."
-    debugPrint("[ScannerScreen] 📱 Showing product bottom sheet for: ${product.name}");
+    // ✅ MEJORA: Pausar cámara mientras se muestra el diálogo (ahorro de batería)
+    final scannerNotifier = ref.read(scannerProvider.notifier);
+    final scannerController = scannerNotifier.scannerService.controller;
+
+    debugPrint("[ScannerScreen] 📱 Showing product bottom sheet - PAUSING camera");
+
+    // Pausar la cámara antes de mostrar el diálogo
+    if (scannerController != null) {
+      try {
+        scannerController.stop();
+      } catch (e) {
+        debugPrint("[ScannerScreen] ⚠️ Error pausing camera: $e");
+      }
+    }
 
     showModalBottomSheet(
       context: context,
@@ -101,13 +154,24 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
       backgroundColor: Colors.transparent,
       builder: (context) => AddToCartDialog(productId: product.id),
     ).whenComplete(() {
-      debugPrint("[ScannerScreen] Bottom sheet closed - resuming scanner");
+      debugPrint("[ScannerScreen] Bottom sheet closed - RESUMING scanner");
 
-      // ⚡ NUEVO: Resetear y reiniciar el scanner después de cerrar el bottom sheet
-      if (mounted) {
-        ref.read(scannerProvider.notifier).resetScanner().then((_) {
-          if (mounted) {
-            ref.read(scannerProvider.notifier).startScanner();
+      // ✅ MEJORA: Reanudar la cámara después de un delay para evitar pantalla en blanco
+      if (mounted && !_isCameraPausedManually) {
+        Future.delayed(const Duration(milliseconds: 300), () {
+          if (mounted && scannerController != null && !_isCameraPausedManually) {
+            try {
+              scannerController.start();
+              debugPrint("[ScannerScreen] ✅ Camera resumed successfully");
+            } catch (e) {
+              debugPrint("[ScannerScreen] ⚠️ Error resuming camera: $e");
+              // Si falla, hacer reset completo
+              scannerNotifier.resetScanner().then((_) {
+                if (mounted && !_isCameraPausedManually) {
+                  scannerNotifier.startScanner();
+                }
+              });
+            }
           }
         });
       }
@@ -536,7 +600,7 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
     if (!appStateValue.isAppConfigured) { return Center( child: Padding( padding: const EdgeInsets.all(32.0), child: Column( mainAxisAlignment: MainAxisAlignment.center, children: [ Icon(Icons.settings_applications_outlined, size: 80, color: Colors.grey.shade400), const SizedBox(height: 24), const Text( 'Configuración Requerida', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500), textAlign: TextAlign.center,), const SizedBox(height: 12), Text( 'Usa el botón "+" y luego "Ajustes" para configurar la conexión con tu tienda WooCommerce.', style: TextStyle(fontSize: 14, color: Colors.grey.shade700), textAlign: TextAlign.center, ), ], ), ), ); }
     switch (scannerState.viewState) {
       case ScannerViewState.initial: return const _LoadingView(message: "Inicializando escáner...");
-      case ScannerViewState.scanning: return _ScannerView( scannerState: scannerState, onDetect: ref.read(scannerProvider.notifier).handleBarcodeDetection, onError: ref.read(scannerProvider.notifier).onScannerError, onManualCapture: ref.read(scannerProvider.notifier).triggerManualCapture, );
+      case ScannerViewState.scanning: return _ScannerView( scannerState: scannerState, onDetect: ref.read(scannerProvider.notifier).handleBarcodeDetection, onError: ref.read(scannerProvider.notifier).onScannerError, onManualCapture: ref.read(scannerProvider.notifier).triggerManualCapture, onTogglePause: _toggleCameraPause, isPausedManually: _isCameraPausedManually, );
       case ScannerViewState.processing: return const _LoadingView(message: "Procesando código...");
       case ScannerViewState.productFound: return const _LoadingView(message: "Producto encontrado...");
       case ScannerViewState.noProduct: case ScannerViewState.error: return _ScannerErrorView( isNoProduct: scannerState.viewState == ScannerViewState.noProduct, errorMessage: scannerState.errorMessage ?? "Error del escáner.", onRetry: () => _clearSearchAndResetScanner() );
@@ -662,12 +726,16 @@ class _ScannerView extends ConsumerWidget {
   final Function(BarcodeCapture) onDetect;
   final Function(MobileScannerException) onError;
   final VoidCallback? onManualCapture;
+  final VoidCallback? onTogglePause; // ✅ MEJORA: Callback para pausa manual
+  final bool isPausedManually; // ✅ MEJORA: Estado de pausa manual
 
   const _ScannerView({
     required this.scannerState,
     required this.onDetect,
     required this.onError,
     this.onManualCapture,
+    this.onTogglePause,
+    this.isPausedManually = false,
     Key? key,
   }) : super(key: key);
 
@@ -760,17 +828,38 @@ class _ScannerView extends ConsumerWidget {
         Positioned(
           top: 80,
           left: 16,
-          child: ElevatedButton.icon(
-            icon: const Icon(Icons.stop_circle_outlined, size: 20),
-            label: const Text("Detener"),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.black54,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            ),
-            onPressed: () {
-              scannerNotifier.resetScanner();
-            },
+          child: Column(
+            children: [
+              // ✅ MEJORA: Botón de pausa/reanudar manual
+              ElevatedButton.icon(
+                icon: Icon(
+                  isPausedManually ? Icons.play_arrow : Icons.pause,
+                  size: 20,
+                ),
+                label: Text(isPausedManually ? "Reanudar" : "Pausar"),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: isPausedManually
+                      ? Colors.green.shade700
+                      : Colors.orange.shade700,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                ),
+                onPressed: onTogglePause,
+              ),
+              const SizedBox(height: 8),
+              ElevatedButton.icon(
+                icon: const Icon(Icons.stop_circle_outlined, size: 20),
+                label: const Text("Detener"),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.black54,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                ),
+                onPressed: () {
+                  scannerNotifier.resetScanner();
+                },
+              ),
+            ],
           ),
         ),
       ],
