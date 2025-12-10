@@ -39,92 +39,46 @@ class _AddProductBottomSheetState extends State<AddProductBottomSheet> {
   void _initializeDefaultAttributes() {
     final attributes = widget.product.fullAttributesWithOptions!;
 
-    for (var entry in attributes.entries) {
-      final attributeName = entry.key;
-      final options = entry.value as List<dynamic>;
+    // ✅ fullAttributesWithOptions es List<Map>, no Map
+    for (var attrMap in attributes) {
+      final attributeName = attrMap['name']?.toString() ?? '';
+      final options = attrMap['options'] as List<dynamic>? ?? [];
 
-      if (options.isNotEmpty) {
-        // Buscar primera opción con stock
-        for (var option in options) {
-          final variation = _findVariationByAttribute(attributeName, option.toString());
-          if (variation != null && (variation['stock_quantity'] ?? 0) > 0) {
-            _selectedAttributes[attributeName] = option.toString();
-            break;
-          }
-        }
-
-        // Si no hay stock, usar primera opción de todas formas
-        if (!_selectedAttributes.containsKey(attributeName)) {
-          _selectedAttributes[attributeName] = options.first.toString();
-        }
+      if (options.isNotEmpty && attributeName.isNotEmpty) {
+        // Por ahora usar primera opción (sin validación de stock de variaciones)
+        // TODO: Implementar búsqueda de variaciones cuando estén disponibles como objetos completos
+        _selectedAttributes[attributeName] = options.first.toString();
       }
     }
 
     _updatePriceAndStock();
   }
 
+  // ❌ DESHABILITADO: variations solo contiene IDs (List<int>), no objetos completos
+  // TODO: Implementar cuando se tenga acceso al repositorio de productos para cargar variaciones
   Map<String, dynamic>? _findVariationByAttribute(String attrName, String attrValue) {
-    if (widget.product.variations == null) return null;
-
-    for (var variation in widget.product.variations!) {
-      final attrs = variation['attributes'] as List<dynamic>?;
-      if (attrs == null) continue;
-
-      for (var attr in attrs) {
-        if (attr['name'] == attrName && attr['option'] == attrValue) {
-          return variation;
-        }
-      }
-    }
+    // if (widget.product.variations == null) return null;
+    // Las variaciones son solo IDs, no objetos con datos
     return null;
   }
 
+  // ❌ DESHABILITADO: variations solo contiene IDs (List<int>), no objetos completos
+  // TODO: Implementar cuando se tenga acceso al repositorio de productos para cargar variaciones
   Map<String, dynamic>? _findMatchingVariation() {
-    if (widget.product.variations == null || _selectedAttributes.isEmpty) {
-      return null;
-    }
-
-    for (var variation in widget.product.variations!) {
-      final varAttrs = variation['attributes'] as List<dynamic>?;
-      if (varAttrs == null) continue;
-
-      bool allMatch = true;
-      for (var entry in _selectedAttributes.entries) {
-        bool found = false;
-        for (var attr in varAttrs) {
-          if (attr['name'] == entry.key && attr['option'] == entry.value) {
-            found = true;
-            break;
-          }
-        }
-        if (!found) {
-          allMatch = false;
-          break;
-        }
-      }
-
-      if (allMatch) {
-        return variation;
-      }
-    }
+    // if (widget.product.variations == null || _selectedAttributes.isEmpty) {
+    //   return null;
+    // }
+    // Las variaciones son solo IDs, no objetos con datos
     return null;
   }
 
   void _updatePriceAndStock() {
-    if (widget.product.type == 'variable') {
-      final variation = _findMatchingVariation();
-      if (variation != null) {
-        setState(() {
-          _currentPrice = double.tryParse(variation['price']?.toString() ?? '0') ?? 0.0;
-          _currentStock = variation['stock_quantity'] ?? 0;
-        });
-      }
-    } else {
-      setState(() {
-        _currentPrice = widget.product.price;
-        _currentStock = widget.product.stockQuantity ?? 0;
-      });
-    }
+    // ⚠️ SIMPLIFICADO: Sin acceso a datos completos de variaciones
+    // TODO: Cargar variación completa desde repositorio cuando se seleccionen atributos
+    setState(() {
+      _currentPrice = widget.product.price;
+      _currentStock = widget.product.stockQuantity ?? 0;
+    });
   }
 
   void _onAttributeChanged(String attributeName, String value) {
@@ -153,53 +107,15 @@ class _AddProductBottomSheetState extends State<AddProductBottomSheet> {
   List<String> _getAvailableOptions(String attributeName) {
     if (widget.product.fullAttributesWithOptions == null) return [];
 
-    final options = widget.product.fullAttributesWithOptions![attributeName] as List<dynamic>?;
-    if (options == null) return [];
-
-    // Filtrar solo opciones con stock
-    final availableOptions = <String>[];
-    for (var option in options) {
-      final optionStr = option.toString();
-
-      // Crear atributos temporales para buscar variación
-      final tempAttrs = Map<String, String>.from(_selectedAttributes);
-      tempAttrs[attributeName] = optionStr;
-
-      // Buscar si existe variación con stock para esta opción
-      bool hasStock = false;
-      if (widget.product.variations != null) {
-        for (var variation in widget.product.variations!) {
-          final varAttrs = variation['attributes'] as List<dynamic>?;
-          if (varAttrs == null) continue;
-
-          bool matches = true;
-          for (var entry in tempAttrs.entries) {
-            bool found = false;
-            for (var attr in varAttrs) {
-              if (attr['name'] == entry.key && attr['option'] == entry.value) {
-                found = true;
-                break;
-              }
-            }
-            if (!found) {
-              matches = false;
-              break;
-            }
-          }
-
-          if (matches && (variation['stock_quantity'] ?? 0) > 0) {
-            hasStock = true;
-            break;
-          }
-        }
-      }
-
-      if (hasStock) {
-        availableOptions.add(optionStr);
+    // ✅ Buscar el atributo en la lista
+    for (var attrMap in widget.product.fullAttributesWithOptions!) {
+      if (attrMap['name']?.toString() == attributeName) {
+        final options = attrMap['options'] as List<dynamic>? ?? [];
+        return options.map((o) => o.toString()).toList();
       }
     }
 
-    return availableOptions;
+    return [];
   }
 
   @override
@@ -228,11 +144,11 @@ class _AddProductBottomSheetState extends State<AddProductBottomSheet> {
                   borderRadius: BorderRadius.circular(8),
                   color: Colors.grey.shade200,
                 ),
-                child: widget.product.imageUrl != null
+                child: widget.product.displayImageUrl != null
                     ? ClipRRect(
                         borderRadius: BorderRadius.circular(8),
                         child: Image.network(
-                          widget.product.imageUrl!,
+                          widget.product.displayImageUrl!,
                           fit: BoxFit.cover,
                           errorBuilder: (_, __, ___) => const Icon(Icons.image_not_supported),
                         ),
@@ -302,9 +218,14 @@ class _AddProductBottomSheetState extends State<AddProductBottomSheet> {
               ),
             ),
             const SizedBox(height: 12),
-            ...widget.product.fullAttributesWithOptions!.entries.map((entry) {
-              final attributeName = entry.key;
+            // ✅ Iterar sobre List<Map>, no Map.entries
+            ...widget.product.fullAttributesWithOptions!.map((attrMap) {
+              final attributeName = attrMap['name']?.toString() ?? '';
               final availableOptions = _getAvailableOptions(attributeName);
+
+              if (attributeName.isEmpty || availableOptions.isEmpty) {
+                return const SizedBox.shrink();
+              }
 
               return Padding(
                 padding: const EdgeInsets.only(bottom: 16),

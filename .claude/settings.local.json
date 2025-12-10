@@ -24,7 +24,8 @@
       "Bash(git restore:*)",
       "Bash(unzip:*)",
       "Bash(timeout 2 cat:*)",
-      "Bash(flutter pub run build_runner build:*)"
+      "Bash(flutter pub run build_runner build:*)",
+      "Bash(flutter analyze:*)"
     ],
     "deny": [],
     "ask": []

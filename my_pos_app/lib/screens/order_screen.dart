@@ -8,7 +8,7 @@ import 'package:flutter_slidable/flutter_slidable.dart';
 import '../models/order.dart' show Order, OrderItem, StringExtension;
 import '../models/product.dart' as app_product;
 import '../models/ui_state.dart';
-import '../providers/customer_notifier.dart';
+import '../providers/customer_notifier.dart' hide Customer; // ✅ FASE 3: Evitar conflicto con models/customer.dart
 import '../providers/order_notifier.dart';
 import '../providers/order_history_notifier.dart';
 import '../providers/app_state_notifier.dart';
@@ -22,8 +22,13 @@ import '../utils/pdf_generator.dart';
 
 import '../widgets/order/current_order_item_card.dart';
 import '../widgets/order/history_order_item_card.dart';
+import '../widgets/customer_selection_dialog.dart'; // ✅ FASE 3: Customer selection
+import '../screens/draft_orders_screen.dart'; // ✅ FASE 3: Draft orders
+import '../models/customer.dart'; // ✅ FASE 3: Customer model
 
 import '../services/woocommerce_service.dart';
+import '../services/storage_service.dart'; // ✅ FASE 3: Para draft orders
+import '../locator.dart'; // ✅ FASE 3: Para getIt
 
 class ModalScaffold extends StatelessWidget {
   final String title;
@@ -512,6 +517,228 @@ class _OrderScreenState extends ConsumerState<OrderScreen> with TickerProviderSt
     // Implementar la lógica para buscar y asignar un cliente a un pedido del historial.
   }
 
+  // ✅ FASE 3: Modal para aplicar descuento a un item
+  void _showDiscountModal(BuildContext context, OrderItem item) {
+    final TextEditingController discountController = TextEditingController(
+      text: (item.individualDiscount ?? 0) > 0 ? item.individualDiscount.toString() : '',
+    );
+    String discountType = 'fixed'; // 'fixed' o 'percent'
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          title: const Text('Aplicar Descuento'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                item.name,
+                style: const TextStyle(fontWeight: FontWeight.bold),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: RadioListTile<String>(
+                      title: const Text('Monto Fijo'),
+                      value: 'fixed',
+                      groupValue: discountType,
+                      onChanged: (value) {
+                        setState(() => discountType = value!);
+                      },
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
+                  Expanded(
+                    child: RadioListTile<String>(
+                      title: const Text('Porcentaje'),
+                      value: 'percent',
+                      groupValue: discountType,
+                      onChanged: (value) {
+                        setState(() => discountType = value!);
+                      },
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: discountController,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(
+                  labelText: discountType == 'fixed' ? 'Descuento (₡)' : 'Descuento (%)',
+                  hintText: '0',
+                  border: const OutlineInputBorder(),
+                  prefixIcon: Icon(
+                    discountType == 'fixed' ? Icons.attach_money : Icons.percent,
+                  ),
+                ),
+                autofocus: true,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Precio unitario: ${currencyFormat.format(item.price)}',
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+              ),
+              Text(
+                'Cantidad: ${item.quantity}',
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                // Eliminar descuento
+                final itemUniqueId = item.isVariation
+                    ? '${item.productId}_${item.variationId!}'
+                    : item.productId;
+                ref.read(currentOrderProvider.notifier).applyItemDiscount(
+                  uniqueItemId: itemUniqueId,
+                  value: 0.0,
+                  isPercentage: false,
+                );
+                Navigator.pop(dialogContext);
+              },
+              child: const Text('QUITAR DESCUENTO'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('CANCELAR'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                final discountValue = double.tryParse(discountController.text) ?? 0.0;
+                if (discountValue > 0) {
+                  final itemUniqueId = item.isVariation
+                      ? '${item.productId}_${item.variationId!}'
+                      : item.productId;
+
+                  // ✅ applyItemDiscount maneja la conversión internamente
+                  ref.read(currentOrderProvider.notifier).applyItemDiscount(
+                    uniqueItemId: itemUniqueId,
+                    value: discountValue,
+                    isPercentage: discountType == 'percent',
+                  );
+                }
+                Navigator.pop(dialogContext);
+              },
+              child: const Text('APLICAR'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ✅ FASE 3: Modal para cambiar variante de un item (placeholder - necesita implementación completa)
+  void _showVariantsModal(BuildContext context, OrderItem item) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Cambiar Variante'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(item.name),
+            const SizedBox(height: 16),
+            const Text(
+              'Funcionalidad próximamente.\n\nPor ahora, elimina el item y agrega la variante correcta desde el escáner.',
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('CERRAR'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ✅ FASE 3: Guardar pedido como borrador
+  Future<void> _saveDraft(BuildContext context, Order order) async {
+    try {
+      final storageService = getIt<StorageService>();
+
+      final draft = {
+        'id': DateTime.now().millisecondsSinceEpoch.toString(), // Usar timestamp como ID
+        'items': order.items.map((item) => {
+          'product_id': item.productId,
+          'variation_id': item.variationId,
+          'name': item.name,
+          'sku': item.sku,
+          'quantity': item.quantity,
+          'price': item.price,
+          'discount': item.individualDiscount ?? 0.0,
+          'subtotal': (item.price * item.quantity) - (item.individualDiscount ?? 0.0),
+          'attributes': item.attributes,
+        }).toList(),
+        'customer': order.customerId != null ? {
+          'id': order.customerId,
+          'name': order.customerName,
+        } : null,
+        'totals': {
+          'subtotal': order.subtotal,
+          'discount': order.discount,
+          'tax': order.tax,
+          'total': order.total,
+        },
+        'createdAt': DateTime.now().toIso8601String(),
+      };
+
+      await storageService.saveDraftOrder(draft);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Borrador guardado exitosamente'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('[OrderScreen] Error saving draft: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error al guardar borrador: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  // ✅ FASE 3: Cargar borrador desde DraftOrdersScreen
+  Future<void> _loadDraft(BuildContext context) async {
+    final draft = await Navigator.push<Map<String, dynamic>>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const DraftOrdersScreen(),
+      ),
+    );
+
+    if (draft != null && mounted) {
+      // TODO: Implementar carga de borrador en el pedido actual
+      // Necesitará método en OrderNotifier para restaurar pedido desde draft
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Funcionalidad de cargar borrador próximamente'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -608,9 +835,19 @@ class _OrderScreenState extends ConsumerState<OrderScreen> with TickerProviderSt
                               Text("Pedido Actual", style: Theme.of(context).textTheme.titleLarge),
                               InkWell(
                                 onTap: () async {
-                                  final selectedCustomer = await Routes.navigateTo(context, Routes.customerSearch);
-                                  if(selectedCustomer is Map<String, dynamic> && mounted){
-                                    ref.read(currentOrderProvider.notifier).updateOrderCustomer(selectedCustomer['id'], selectedCustomer['name']);
+                                  // ✅ FASE 3: Usar CustomerSelectionDialog
+                                  final Customer? selectedCustomer = await showDialog<Customer>(
+                                    context: context,
+                                    builder: (context) => CustomerSelectionDialog(
+                                      selectedCustomer: null, // TODO: Pasar cliente actual
+                                    ),
+                                  );
+
+                                  if (selectedCustomer != null && mounted) {
+                                    ref.read(currentOrderProvider.notifier).updateOrderCustomer(
+                                      selectedCustomer.id.toString(),
+                                      selectedCustomer.name,
+                                    );
                                   }
                                 },
                             borderRadius: BorderRadius.circular(8),
@@ -645,19 +882,70 @@ class _OrderScreenState extends ConsumerState<OrderScreen> with TickerProviderSt
                             (context, index) {
                           final item = order.items[index];
                           final uniqueItemId = _getUniqueCartItemId(item.productId, item.variationId);
-                          return CurrentOrderItemCard(
-                            item: item,
-                            currencyFormat: currencyFormat,
-                            onDelete: () => _deleteOrderItem(item),
-                            onDuplicate: () => _duplicateOrderItem(item),
-                            isExpanded: _expandedOrderItemIdActual == uniqueItemId,
-                            onToggleExpand: () {
-                              if (mounted) setState(() => _expandedOrderItemIdActual = _expandedOrderItemIdActual == uniqueItemId ? null : uniqueItemId);
+
+                          // ✅ FASE 3: Dismissible para eliminar deslizando
+                          return Dismissible(
+                            key: ValueKey(uniqueItemId),
+                            direction: DismissDirection.endToStart,
+                            background: Container(
+                              color: Colors.red,
+                              alignment: Alignment.centerRight,
+                              padding: const EdgeInsets.only(right: 20),
+                              child: const Icon(
+                                Icons.delete,
+                                color: Colors.white,
+                                size: 32,
+                              ),
+                            ),
+                            confirmDismiss: (direction) async {
+                              return await showDialog<bool>(
+                                context: context,
+                                builder: (dialogContext) => AlertDialog(
+                                  title: const Text('Eliminar Producto'),
+                                  content: Text(
+                                    '¿Eliminar "${item.name}" del pedido?',
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () => Navigator.pop(dialogContext, false),
+                                      child: const Text('CANCELAR'),
+                                    ),
+                                    ElevatedButton(
+                                      onPressed: () => Navigator.pop(dialogContext, true),
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.red,
+                                      ),
+                                      child: const Text('ELIMINAR'),
+                                    ),
+                                  ],
+                                ),
+                              );
                             },
-                            onShowVariantsModal: (OrderItem item) {
+                            onDismissed: (direction) {
+                              _deleteOrderItem(item);
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text('${item.name} eliminado'),
+                                  duration: const Duration(seconds: 2),
+                                ),
+                              );
                             },
-                            onShowDiscountModal: (OrderItem item) {
-                            },
+                            child: CurrentOrderItemCard(
+                              item: item,
+                              currencyFormat: currencyFormat,
+                              onDelete: () => _deleteOrderItem(item),
+                              onDuplicate: () => _duplicateOrderItem(item),
+                              isExpanded: _expandedOrderItemIdActual == uniqueItemId,
+                              onToggleExpand: () {
+                                if (mounted) setState(() => _expandedOrderItemIdActual = _expandedOrderItemIdActual == uniqueItemId ? null : uniqueItemId);
+                              },
+                              onShowVariantsModal: (OrderItem item) {
+                                _showVariantsModal(context, item);
+                              },
+                              onShowDiscountModal: (OrderItem item) {
+                                _showDiscountModal(context, item);
+                              },
+                            ),
                           );
                         },
                         childCount: order.items.length,
@@ -666,7 +954,7 @@ class _OrderScreenState extends ConsumerState<OrderScreen> with TickerProviderSt
                 ],
               ),
             ),
-                if (order.items.isNotEmpty) _buildBottomActionBar(context, order.total),
+                if (order.items.isNotEmpty) _buildBottomActionBar(context, order, state.taxRate), // ✅ FASE 3: Pasar order y taxRate
               ],
             );
           },
@@ -686,7 +974,9 @@ class _OrderScreenState extends ConsumerState<OrderScreen> with TickerProviderSt
     );
   }
 
-  Widget _buildBottomActionBar(BuildContext context, double total) {
+  // ✅ FASE 3: Bottom bar mejorado con desglose y botones de borradores
+  Widget _buildBottomActionBar(BuildContext context, Order order, double taxRate) {
+    final currencyFormat = NumberFormat.currency(symbol: '₡', decimalDigits: 0);
     return Material(
       elevation: 8,
       child: Container(
@@ -695,30 +985,112 @@ class _OrderScreenState extends ConsumerState<OrderScreen> with TickerProviderSt
           color: Theme.of(context).cardColor,
           border: Border(top: BorderSide(color: Colors.grey.shade300, width: 0.5)),
         ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            // Botones de acción: Borrador y Cargar
+            Row(
               children: [
-                const Text("TOTAL", style: TextStyle(fontSize: 13, color: Colors.grey)),
-                Text(
-                  currencyFormat.format(total),
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _saveDraft(context, order),
+                    icon: const Icon(Icons.save_outlined, size: 18),
+                    label: const Text('Guardar Borrador', style: TextStyle(fontSize: 12)),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _loadDraft(context),
+                    icon: const Icon(Icons.folder_open, size: 18),
+                    label: const Text('Cargar Borrador', style: TextStyle(fontSize: 12)),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                    ),
+                  ),
                 ),
               ],
             ),
-            ElevatedButton.icon(
-              onPressed: () => _showSaveOrderConfirmationDialog(context),
-              icon: const Icon(Icons.save_alt_rounded),
-              label: const Text("GUARDAR PEDIDO"),
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                textStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-              ),
+
+            const SizedBox(height: 12),
+            const Divider(height: 1),
+            const SizedBox(height: 12),
+
+            // Desglose de cálculos
+            _buildCalculationRow('Subtotal:', order.subtotal, isSubtotal: true),
+            if (order.discount > 0)
+              _buildCalculationRow('Descuento:', -order.discount, isDiscount: true),
+            _buildCalculationRow('Impuestos (${(taxRate * 100).toStringAsFixed(0)}%):', order.tax, isTax: true),
+
+            const SizedBox(height: 8),
+            const Divider(thickness: 1.5),
+            const SizedBox(height: 8),
+
+            // Total y botón guardar
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text("TOTAL", style: TextStyle(fontSize: 13, color: Colors.grey, fontWeight: FontWeight.bold)),
+                    Text(
+                      currencyFormat.format(order.total),
+                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: Theme.of(context).primaryColor,
+                      ),
+                    ),
+                  ],
+                ),
+                ElevatedButton.icon(
+                  onPressed: () => _showSaveOrderConfirmationDialog(context),
+                  icon: const Icon(Icons.check_circle_outline),
+                  label: const Text("FINALIZAR"),
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                    textStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  // ✅ FASE 3: Helper para mostrar fila de cálculo
+  Widget _buildCalculationRow(String label, double value, {bool isSubtotal = false, bool isDiscount = false, bool isTax = false}) {
+    Color? valueColor;
+    if (isDiscount) valueColor = Colors.green.shade700;
+    if (isTax) valueColor = Colors.orange.shade700;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 13,
+              color: Colors.grey.shade700,
+              fontWeight: isSubtotal ? FontWeight.w600 : FontWeight.normal,
+            ),
+          ),
+          Text(
+            currencyFormat.format(value),
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: isSubtotal ? FontWeight.w600 : FontWeight.w500,
+              color: valueColor ?? Colors.black87,
+            ),
+          ),
+        ],
       ),
     );
   }

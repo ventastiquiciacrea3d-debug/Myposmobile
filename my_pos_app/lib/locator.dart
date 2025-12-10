@@ -6,8 +6,8 @@ import 'package:my_pos_mobile_barcode/models/customer.dart';
 import 'package:my_pos_mobile_barcode/models/inventory_adjustment_cache.dart';
 import 'package:my_pos_mobile_barcode/models/inventory_movement.dart';
 import 'package:my_pos_mobile_barcode/models/label_print_item.dart';
-import 'package:my_pos_mobile_barcode/models/order.dart';
-import 'package:my_pos_mobile_barcode/models/order_item.dart';
+import 'package:my_pos_mobile_barcode/models/order.dart' hide OrderItemAdapter; // ✅ FASE 3: Ocultar OrderItemAdapter de order.dart
+import 'package:my_pos_mobile_barcode/models/order_item.dart'; // ✅ FASE 3: Usar OrderItemAdapter de order_item.dart
 import 'package:my_pos_mobile_barcode/models/product.dart';
 import 'package:my_pos_mobile_barcode/models/sync_operation.dart';
 import 'package:my_pos_mobile_barcode/services/scanner_service.dart';

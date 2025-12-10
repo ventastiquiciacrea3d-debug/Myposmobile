@@ -104,9 +104,9 @@ class OrderItem extends HiveObject {
       price: itemPrice,
       subtotal: itemPrice * quantity,
       attributes: selectedAttributes ?? {},
-      availableAttributes: product.fullAttributesWithOptions != null
-          ? Map<String, dynamic>.from(product.fullAttributesWithOptions!)
-          : null,
+      // ⚠️ NOTA: fullAttributesWithOptions es List<Map>, no Map - incompatible con availableAttributes
+      // TODO: Refactorizar modelo para soportar List<Map> o convertir estructura
+      availableAttributes: null,
     );
   }
 
