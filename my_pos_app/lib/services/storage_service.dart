@@ -653,6 +653,81 @@ class StorageService {
     return 0;
   }
 
+  // ==================== GESTIÓN DE BORRADORES DE PEDIDOS ====================
+
+  /// Guardar borrador de pedido
+  Future<void> saveDraftOrder(Map<String, dynamic> draft) async {
+    try {
+      final draftsBox = Hive.box('draft_orders');
+      await draftsBox.put(draft['id'], draft);
+      debugPrint('[StorageService] Draft order saved: ${draft['id']}');
+    } catch (e) {
+      debugPrint('[StorageService] Error saving draft: $e');
+      rethrow;
+    }
+  }
+
+  /// Obtener borrador por ID
+  Future<Map<String, dynamic>?> getDraftOrder(String id) async {
+    try {
+      final draftsBox = Hive.box('draft_orders');
+      final draft = draftsBox.get(id);
+      if (draft != null) {
+        return Map<String, dynamic>.from(draft);
+      }
+      return null;
+    } catch (e) {
+      debugPrint('[StorageService] Error loading draft: $e');
+      return null;
+    }
+  }
+
+  /// Obtener todos los borradores
+  Future<List<Map<String, dynamic>>> getAllDraftOrders() async {
+    try {
+      final draftsBox = Hive.box('draft_orders');
+      final drafts = draftsBox.values
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .toList();
+
+      // Ordenar por fecha de creación (más recientes primero)
+      drafts.sort((a, b) {
+        final dateA = DateTime.parse(a['createdAt'] ?? '1970-01-01');
+        final dateB = DateTime.parse(b['createdAt'] ?? '1970-01-01');
+        return dateB.compareTo(dateA);
+      });
+
+      return drafts;
+    } catch (e) {
+      debugPrint('[StorageService] Error loading drafts: $e');
+      return [];
+    }
+  }
+
+  /// Eliminar borrador
+  Future<void> deleteDraftOrder(String id) async {
+    try {
+      final draftsBox = Hive.box('draft_orders');
+      await draftsBox.delete(id);
+      debugPrint('[StorageService] Draft order deleted: $id');
+    } catch (e) {
+      debugPrint('[StorageService] Error deleting draft: $e');
+      rethrow;
+    }
+  }
+
+  /// Limpiar todos los borradores
+  Future<void> clearAllDraftOrders() async {
+    try {
+      final draftsBox = Hive.box('draft_orders');
+      await draftsBox.clear();
+      debugPrint('[StorageService] All draft orders cleared');
+    } catch (e) {
+      debugPrint('[StorageService] Error clearing drafts: $e');
+      rethrow;
+    }
+  }
+
   void dispose() {
     debugPrint("[StorageService] Dispose called.");
   }

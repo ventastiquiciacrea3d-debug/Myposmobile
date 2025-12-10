@@ -6,7 +6,7 @@ part of 'inventory_notifier.dart';
 // RiverpodGenerator
 // **************************************************************************
 
-String _$inventoryHash() => r'4ec29007807484dd48f362dc16d6052a259f97e2';
+String _$inventoryHash() => r'19bf93b01d36c47e6091aadd568314a8be036018';
 
 /// ✓ FASE 2 RIVERPOD: Inventory Notifier
 ///

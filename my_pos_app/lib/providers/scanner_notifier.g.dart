@@ -6,7 +6,7 @@ part of 'scanner_notifier.dart';
 // RiverpodGenerator
 // **************************************************************************
 
-String _$scannerHash() => r'6142cca7006b3affa6d8cc3179a87438a92d10c8';
+String _$scannerHash() => r'920bb52fc2b08c1f802cacf15bcdbb93446e0c70';
 
 /// ✓ FASE 2 RIVERPOD: Scanner Notifier
 ///

@@ -43,8 +43,9 @@ Future<void> initializeCoreServices(SendPort? sendPort) async {
 
     // 2. Abrir solo las cajas de Hive que NO han sido migradas
     await Future.wait([
-      // ✅ AÚN EN HIVE - Solo SyncQueue
+      // ✅ AÚN EN HIVE - SyncQueue y draft_orders
       Hive.openBox<SyncOperation>(hiveSyncQueueBoxName),
+      Hive.openBox('draft_orders'), // ✅ NUEVO: Box para borradores de pedidos
 
       // ❌ MIGRADO A SHAREDPREFERENCES - Ya no usa Hive
       // Hive.openBox(hiveSettingsBoxName),
@@ -61,7 +62,7 @@ Future<void> initializeCoreServices(SendPort? sendPort) async {
       // Hive.openBox<List<String>>(hiveBarcodeIndexBoxName),
     ]);
 
-    debugPrint("[INIT_ISOLATE] Hive boxes opened successfully (SyncQueue only)");
+    debugPrint("[INIT_ISOLATE] Hive boxes opened successfully (SyncQueue + draft_orders)");
 
     // 3. Inicializar cache HTTP
     await ApiCacheManager.initialize();

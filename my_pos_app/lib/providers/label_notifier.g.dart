@@ -6,7 +6,7 @@ part of 'label_notifier.dart';
 // RiverpodGenerator
 // **************************************************************************
 
-String _$labelHash() => r'fbb8be2775e5d93d41af1d26167506788e97511d';
+String _$labelHash() => r'f455358d4a3548fcabc74b369ecbbcbd7e267344';
 
 /// ✅ OBJECTBOX ONLY: Label Notifier (migrado de Hive)
 ///

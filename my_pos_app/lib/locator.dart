@@ -2,10 +2,12 @@
 import 'package:flutter/foundation.dart';
 import 'package:get_it/get_it.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:my_pos_mobile_barcode/models/customer.dart';
 import 'package:my_pos_mobile_barcode/models/inventory_adjustment_cache.dart';
 import 'package:my_pos_mobile_barcode/models/inventory_movement.dart';
 import 'package:my_pos_mobile_barcode/models/label_print_item.dart';
 import 'package:my_pos_mobile_barcode/models/order.dart';
+import 'package:my_pos_mobile_barcode/models/order_item.dart';
 import 'package:my_pos_mobile_barcode/models/product.dart';
 import 'package:my_pos_mobile_barcode/models/sync_operation.dart';
 import 'package:my_pos_mobile_barcode/services/scanner_service.dart';
@@ -61,6 +63,10 @@ void registerHiveAdapters() {
     if (!Hive.isAdapterRegistered(9)) Hive.registerAdapter(SyncOperationTypeAdapter());
     if (!Hive.isAdapterRegistered(10)) Hive.registerAdapter(SyncOperationAdapter());
     if (!Hive.isAdapterRegistered(11)) Hive.registerAdapter(SyncOperationStatusAdapter());
+
+    // ✅ NUEVOS ADAPTADORES - Customer y OrderItem para pedidos mejorados
+    if (!Hive.isAdapterRegistered(12)) Hive.registerAdapter(CustomerAdapter());
+    if (!Hive.isAdapterRegistered(13)) Hive.registerAdapter(OrderItemAdapter());
   } catch (e) {
     debugPrint("[registerHiveAdapters] Advertencia durante registro: $e");
   }

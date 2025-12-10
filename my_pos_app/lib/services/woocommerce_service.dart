@@ -1420,4 +1420,120 @@ class WooCommerceService {
       throw StateError("Unreachable");
     }
   }
+
+  // ==================== GESTIÓN DE CLIENTES ====================
+
+  /// Obtener clientes recientes
+  Future<List<Map<String, dynamic>>> getRecentCustomers({int limit = 10}) async {
+    if (!await _connectivityService.checkConnectivity()) {
+      throw NetworkException("Sin conexión.");
+    }
+
+    try {
+      final dio = await _getDioClient();
+
+      final response = await dio.get(
+        'wp-json/wc/v3/customers',
+        queryParameters: {
+          'per_page': limit,
+          'orderby': 'date',
+          'order': 'desc',
+        },
+      );
+
+      if (response.data is List) {
+        return List<Map<String, dynamic>>.from(response.data);
+      }
+
+      return [];
+    } on DioException catch (e) {
+      _handleDioError(e, "get recent customers");
+      return [];
+    }
+  }
+
+  /// Buscar clientes por término
+  Future<List<Map<String, dynamic>>> searchCustomers(String query) async {
+    if (!await _connectivityService.checkConnectivity()) {
+      throw NetworkException("Sin conexión.");
+    }
+
+    if (query.trim().isEmpty) {
+      return getRecentCustomers();
+    }
+
+    try {
+      final dio = await _getDioClient();
+
+      final response = await dio.get(
+        'wp-json/wc/v3/customers',
+        queryParameters: {
+          'search': query.trim(),
+          'per_page': 20,
+        },
+      );
+
+      if (response.data is List) {
+        return List<Map<String, dynamic>>.from(response.data);
+      }
+
+      return [];
+    } on DioException catch (e) {
+      _handleDioError(e, "search customers");
+      return [];
+    }
+  }
+
+  /// Crear nuevo cliente
+  Future<Map<String, dynamic>> createCustomer(Map<String, dynamic> customerData) async {
+    if (!await _connectivityService.checkConnectivity()) {
+      throw NetworkException("Sin conexión.");
+    }
+
+    try {
+      final dio = await _getDioClient();
+
+      final response = await dio.post(
+        'wp-json/wc/v3/customers',
+        data: customerData,
+      );
+
+      final data = _tryParseResponseData(response);
+
+      if (data is Map<String, dynamic>) {
+        return data;
+      }
+
+      throw InvalidDataException("Respuesta inesperada al crear cliente.");
+    } on DioException catch (e) {
+      _handleDioError(e, "create customer", throwException: true);
+      throw StateError("Unreachable");
+    }
+  }
+
+  /// Obtener cliente por ID
+  Future<Map<String, dynamic>?> getCustomerById(int customerId) async {
+    if (!await _connectivityService.checkConnectivity()) {
+      throw NetworkException("Sin conexión.");
+    }
+
+    try {
+      final dio = await _getDioClient();
+
+      final response = await dio.get(
+        'wp-json/wc/v3/customers/$customerId',
+      );
+
+      final data = _tryParseResponseData(response);
+
+      if (data is Map<String, dynamic>) {
+        return data;
+      }
+
+      return null;
+    } on DioException catch (e) {
+      _handleDioError(e, "get customer by id");
+      return null;
+    }
+  }
 }
