@@ -137,9 +137,12 @@ class _QuantitySelectorState extends State<QuantitySelector> {
             ),
             // Separador Vertical.
             VerticalDivider(width: 1, thickness: 1, color: Colors.grey.shade300, indent: 4, endIndent: 4),
-            // TextField para la cantidad.
+            // ✅ FIX: TextField con constraints para evitar overflow
             Container(
-              width: 50, // Ancho fijo para el campo de texto.
+              constraints: const BoxConstraints(
+                minWidth: 40,
+                maxWidth: 80, // Limitar ancho máximo para evitar overflow
+              ),
               alignment: Alignment.center,
               child: TextField(
                 controller: _controller,

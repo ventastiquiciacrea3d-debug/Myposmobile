@@ -201,6 +201,7 @@ class MPBM_Batch_Operations_V2 {
         $cases_stock = [];
         $cases_status = [];
         $product_ids = [];
+        $log_data = []; // ✅ NUEVO: Guardar datos para logging
 
         foreach ($items as $item) {
             $product_id = (int) $item['id'];
@@ -209,28 +210,41 @@ class MPBM_Batch_Operations_V2 {
 
             $product_ids[] = $product_id;
 
-            // Obtener stock actual si es necesario
-            if ($operation !== 'set') {
-                $current_stock = $wpdb->get_var($wpdb->prepare(
-                    "SELECT meta_value FROM {$wpdb->postmeta}
-                     WHERE post_id = %d AND meta_key = '_stock'",
-                    $product_id
-                ));
+            // Obtener stock actual SIEMPRE (necesario para logging)
+            $current_stock = $wpdb->get_var($wpdb->prepare(
+                "SELECT meta_value FROM {$wpdb->postmeta}
+                 WHERE post_id = %d AND meta_key = '_stock'",
+                $product_id
+            ));
+            $stock_before = is_numeric($current_stock) ? (int)$current_stock : 0;
 
-                if ($operation === 'add') {
-                    $new_stock = (int)$current_stock + $new_stock;
-                } elseif ($operation === 'subtract') {
-                    $new_stock = (int)$current_stock - $new_stock;
-                }
-
-                $new_stock = max(0, $new_stock); // No permitir stock negativo
+            // Calcular nuevo stock según operación
+            if ($operation === 'set') {
+                $final_stock = $new_stock;
+            } elseif ($operation === 'add') {
+                $final_stock = $stock_before + $new_stock;
+            } elseif ($operation === 'subtract') {
+                $final_stock = $stock_before - $new_stock;
+            } else {
+                $final_stock = $new_stock;
             }
 
+            $final_stock = max(0, $final_stock); // No permitir stock negativo
+
+            // ✅ NUEVO: Guardar datos para logging
+            $log_data[] = [
+                'product_id' => $product_id,
+                'stock_before' => $stock_before,
+                'stock_after' => $final_stock,
+                'quantity_changed' => $final_stock - $stock_before,
+                'operation' => $operation
+            ];
+
             // Preparar CASE para stock
-            $cases_stock[] = $wpdb->prepare("WHEN post_id = %d THEN %d", $product_id, $new_stock);
+            $cases_stock[] = $wpdb->prepare("WHEN post_id = %d THEN %d", $product_id, $final_stock);
 
             // Preparar CASE para stock_status
-            $stock_status = $new_stock > 0 ? 'instock' : 'outofstock';
+            $stock_status = $final_stock > 0 ? 'instock' : 'outofstock';
             $cases_status[] = $wpdb->prepare("WHEN post_id = %d THEN %s", $product_id, $stock_status);
         }
 
@@ -255,6 +269,9 @@ class MPBM_Batch_Operations_V2 {
 
             $updated = count($items);
         }
+
+        // ✅ NUEVO: Registrar en historial de inventario
+        $this->log_stock_changes($log_data);
 
         // Limpiar cache de productos
         foreach ($product_ids as $product_id) {
@@ -448,6 +465,125 @@ class MPBM_Batch_Operations_V2 {
         }
 
         return $created_orders;
+    }
+
+    /**
+     * ✅ NUEVO: Registrar cambios de stock en historial de inventario
+     */
+    private function log_stock_changes($log_data) {
+        if (empty($log_data)) {
+            return;
+        }
+
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'mpbm_inventory_log';
+
+        // Obtener user_id del JWT (si está disponible)
+        $user_id = get_current_user_id();
+        if ($user_id === 0) {
+            // Si no hay usuario logueado, buscar en JWT
+            $user_id = $this->get_user_id_from_jwt();
+        }
+
+        // Generar movement_id único para este batch
+        $movement_id = wp_generate_uuid4();
+
+        foreach ($log_data as $log_item) {
+            $product_id = $log_item['product_id'];
+            $product = wc_get_product($product_id);
+
+            if (!$product) {
+                continue; // Skip si el producto no existe
+            }
+
+            // Determinar si es variación o producto simple
+            $is_variation = $product->is_type('variation');
+            $parent_id = $is_variation ? $product->get_parent_id() : $product_id;
+            $variation_id = $is_variation ? $product_id : 0;
+
+            // Determinar reason según la operación
+            $operation = $log_item['operation'];
+            $reason = 'massEntry'; // Default
+            if ($operation === 'add') {
+                $reason = 'massEntry';
+            } elseif ($operation === 'subtract') {
+                $reason = 'massExit';
+            } elseif ($operation === 'set') {
+                $reason = 'stockCorrection';
+            }
+
+            // Descripción del movimiento
+            $description = sprintf(
+                'Ajuste masivo desde app móvil (%s: %+d)',
+                $operation,
+                $log_item['quantity_changed']
+            );
+
+            // Insertar en tabla de historial
+            $wpdb->insert($table_name, [
+                'movement_id' => $movement_id,
+                'product_id' => $parent_id,
+                'variation_id' => $variation_id,
+                'product_name' => $product->get_name(),
+                'sku' => $product->get_sku() ?: '',
+                'quantity_changed' => (int) $log_item['quantity_changed'],
+                'stock_before' => (int) $log_item['stock_before'],
+                'stock_after' => (int) $log_item['stock_after'],
+                'reason' => sanitize_text_field($reason),
+                'description' => sanitize_text_field($description),
+                'user_id' => (int) $user_id,
+                'log_date' => current_time('mysql'),
+            ], [
+                '%s', // movement_id
+                '%d', // product_id
+                '%d', // variation_id
+                '%s', // product_name
+                '%s', // sku
+                '%d', // quantity_changed
+                '%d', // stock_before
+                '%d', // stock_after
+                '%s', // reason
+                '%s', // description
+                '%d', // user_id
+                '%s'  // log_date
+            ]);
+        }
+    }
+
+    /**
+     * ✅ NUEVO: Obtener user_id desde el JWT token
+     */
+    private function get_user_id_from_jwt() {
+        // Intentar obtener el token del header Authorization
+        $auth_header = isset($_SERVER['HTTP_AUTHORIZATION']) ? $_SERVER['HTTP_AUTHORIZATION'] : '';
+
+        if (empty($auth_header) && function_exists('apache_request_headers')) {
+            $headers = apache_request_headers();
+            $auth_header = isset($headers['Authorization']) ? $headers['Authorization'] : '';
+        }
+
+        if (empty($auth_header)) {
+            return 0;
+        }
+
+        // Extraer el token
+        $token = str_replace('Bearer ', '', $auth_header);
+
+        // Decodificar el JWT (simplificado - solo extraemos el payload)
+        try {
+            $parts = explode('.', $token);
+            if (count($parts) === 3) {
+                $payload = json_decode(base64_decode($parts[1]), true);
+                if (isset($payload['data']['user']['id'])) {
+                    return (int) $payload['data']['user']['id'];
+                }
+            }
+        } catch (Exception $e) {
+            // Si falla la decodificación, retornar 0
+            return 0;
+        }
+
+        return 0;
     }
 
     /**

@@ -15,6 +15,7 @@ import '../models/label_print_item.dart';
 import '../models/sync_operation.dart';
 import '../services/sync_manager.dart';
 import '../services/woocommerce_service.dart';
+import '../services/storage_service.dart';
 import '../repositories/inventory_repository.dart';
 import 'inventory_state.dart';
 import 'shared_providers.dart';
@@ -28,6 +29,7 @@ class Inventory extends _$Inventory {
   late SyncManager _syncManager;
   late SharedPreferences _prefs;
   late WooCommerceService _wooService;
+  late StorageService _storageService;
 
   Timer? _errorTimer;
 
@@ -39,6 +41,7 @@ class Inventory extends _$Inventory {
     _syncManager = ref.read(syncManagerProvider);
     _prefs = ref.read(sharedPreferencesProvider);
     _wooService = ref.read(wooCommerceServiceProvider);
+    _storageService = ref.read(storageServiceProvider);
 
     ref.onDispose(() {
       debugPrint("[Inventory] Disposing");
@@ -252,11 +255,33 @@ class Inventory extends _$Inventory {
 
         debugPrint('[Inventory] ✅ Batch adjustment completed: $updated products');
 
+        // ✅ FIX: Actualizar stock local inmediatamente
+        final productRepo = ref.read(productRepositoryProvider);
+        for (final item in itemsToAdjust) {
+          try {
+            final product = await productRepo.getProductById(item.productId, forceApi: false);
+            if (product != null) {
+              final stockBefore = product.stockQuantity ?? 0;
+              final stockAfter = stockBefore + item.quantityChanged;
+
+              debugPrint('[Inventory] 📦 Actualizando stock local: ${product.name} - Antes: $stockBefore, Después: $stockAfter');
+
+              // Crear nueva instancia con stock actualizado
+              final updatedProduct = product.copyWith(
+                stockQuantity: () => stockAfter,
+                stockStatus: () => stockAfter > 0 ? 'instock' : 'outofstock',
+              );
+
+              // Guardar en ObjectBox
+              await _storageService.cacheProduct(updatedProduct);
+            }
+          } catch (e) {
+            debugPrint('[Inventory] ⚠️ Error actualizando stock local para ${item.productId}: $e');
+          }
+        }
+
         await loadInventoryMovements(refresh: true);
         _setError('Ajuste aplicado: $updated productos actualizados', durationSeconds: 5);
-
-        // TODO: Trigger delta sync para actualizar local
-        // await ref.read(deltaSyncServiceProvider).performDeltaSync();
 
         return true;
       } else {

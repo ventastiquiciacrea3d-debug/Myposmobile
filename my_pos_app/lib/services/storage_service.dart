@@ -181,14 +181,45 @@ class StorageService {
   }
   Future<void> addToSyncQueue(SyncOperation operation) async {
     final box = _syncQueueBox; if (!_isBoxReady(box, hiveSyncQueueBoxName)) return;
-    await box!.put(operation.id, operation);
+
+    // ✅ FIX: Verificar si ya existe una operación con el mismo idempotencyKey
+    try {
+      final existing = box!.values.cast<SyncOperation?>().firstWhere(
+        (op) => op != null && op.idempotencyKey == operation.idempotencyKey,
+        orElse: () => null,
+      );
+
+      if (existing != null && existing.id != operation.id) {
+        // Ya existe una operación con el mismo idempotencyKey
+        // Actualizar la existente en lugar de crear duplicado
+        debugPrint('[StorageService] 🔄 Updating existing sync operation: ${existing.id}');
+        await box.delete(existing.id);
+      }
+
+      await box.put(operation.id, operation);
+    } catch (e) {
+      debugPrint('[StorageService] Error in addToSyncQueue: $e');
+      // Fallback: solo hacer put
+      await box!.put(operation.id, operation);
+    }
   }
+
   Future<void> removeFromSyncQueue(String operationId) async {
     final box = _syncQueueBox; if (!_isBoxReady(box, hiveSyncQueueBoxName)) return;
     await box!.delete(operationId);
   }
+
   Future<void> updateSyncOperation(SyncOperation operation) async {
-    await addToSyncQueue(operation);
+    final box = _syncQueueBox; if (!_isBoxReady(box, hiveSyncQueueBoxName)) return;
+
+    // ✅ FIX: Simplemente actualizar la operación existente sin eliminar
+    // Ya que la instancia está vinculada a Hive, solo necesitamos hacer put
+    try {
+      await box!.put(operation.id, operation);
+      debugPrint('[StorageService] ✅ Updated sync operation: ${operation.id}');
+    } catch (e) {
+      debugPrint('[StorageService] ❌ Error updating sync operation: $e');
+    }
   }
 
   Future<void> setLastSync(DateTime dt) async {

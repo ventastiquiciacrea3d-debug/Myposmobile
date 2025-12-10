@@ -387,8 +387,9 @@ class _InventoryAdjustmentFormScreenState
       final bool needsDetails = productFromSearch.isVariable &&
           (productFromSearch.fullAttributesWithOptions == null || productFromSearch.fullAttributesWithOptions!.isEmpty);
 
+      // ✅ OPTIMIZACIÓN: Usar base de datos local (forceApi: false) en lugar de API
       final productToProcess = needsDetails
-          ? await getIt<ProductRepository>().getProductById(productFromSearch.id, forceApi: true)
+          ? await getIt<ProductRepository>().getProductById(productFromSearch.id, forceApi: false)
           : productFromSearch;
 
       if (!mounted) return;
@@ -733,9 +734,21 @@ class _InventoryAdjustmentFormScreenState
           },
         );
       },
-    ).then((value) {
+    ).then((value) async {
+      // ✅ FIX: Esperar un momento antes de dispose para evitar crash
+      await Future.delayed(const Duration(milliseconds: 300));
+
       if (_cameraScannerController != null) {
-        try { _cameraScannerController!.dispose(); } catch(e) { if (kDebugMode) print("Error disposing camera controller in .then(): $e"); }
+        try {
+          // Primero detener el scanner
+          await _cameraScannerController!.stop();
+          // Luego dispose con delay
+          await Future.delayed(const Duration(milliseconds: 100));
+          _cameraScannerController!.dispose();
+          if (kDebugMode) print("[InventoryAdjustment] Camera controller disposed safely");
+        } catch(e) {
+          if (kDebugMode) print("Error disposing camera controller in .then(): $e");
+        }
         _cameraScannerController = null;
       }
       return value;
@@ -890,18 +903,19 @@ class _InventoryAdjustmentFormScreenState
       app_product.Product? loadedProductDetails;
       app_product.Product? parentProductForUi;
 
+      // ✅ OPTIMIZACIÓN: Usar base de datos local (forceApi: false) en lugar de API
       if (itemToEdit.variationId != null && itemToEdit.variationId!.isNotEmpty) {
         loadedProductDetails = await getIt<ProductRepository>().getVariationById(
-            itemToEdit.productId, itemToEdit.variationId!, forceApi: true);
+            itemToEdit.productId, itemToEdit.variationId!, forceApi: false);
 
         if (loadedProductDetails?.parentId != null) {
           parentProductForUi = await getIt<ProductRepository>().getProductById(
-              loadedProductDetails!.parentId.toString(), forceApi: true);
+              loadedProductDetails!.parentId.toString(), forceApi: false);
         } else if (loadedProductDetails == null) {
-          parentProductForUi = await getIt<ProductRepository>().getProductById(itemToEdit.productId, forceApi: true);
+          parentProductForUi = await getIt<ProductRepository>().getProductById(itemToEdit.productId, forceApi: false);
         }
       } else {
-        loadedProductDetails = await getIt<ProductRepository>().getProductById(itemToEdit.productId, forceApi: true);
+        loadedProductDetails = await getIt<ProductRepository>().getProductById(itemToEdit.productId, forceApi: false);
         parentProductForUi = loadedProductDetails;
       }
 
