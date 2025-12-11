@@ -759,32 +759,8 @@ class WooCommerceService {
     }
   }
 
-  Future<Map<String, dynamic>> createCustomer(Map<String, dynamic> data) async {
-    if (!await _connectivityService.checkConnectivity()) throw NetworkException("Sin conexión.");
-    try {
-      final dio = await _getDioClient();
-      final Map<String, dynamic> payload = {
-        'email': data['email'],
-        'first_name': data['first_name'],
-        'last_name': data['last_name'],
-        'billing': {
-          'first_name': data['first_name'],
-          'last_name': data['last_name'],
-          'email': data['email'],
-          'phone': data['phone'],
-        }
-      };
-      final response = await dio.post('wp-json/wc/v3/customers', data: payload);
-      final responseData = _tryParseResponseData(response);
-      if (responseData is Map<String, dynamic>) {
-        return responseData;
-      }
-      throw InvalidDataException("Respuesta inválida al crear cliente.");
-    } catch (e) {
-      if(e is ApiException) rethrow;
-      throw ApiException("Error creando cliente: ${e.toString()}");
-    }
-  }
+  // ❌ ELIMINADO: createCustomer duplicado (versión antigua)
+  // ✅ La versión correcta está en línea 1488
 
   Future<Map<String, dynamic>> getOrderHistory({int page = 1, int perPage = 20, String? searchTerm, String? status}) async {
     if (!await _connectivityService.checkConnectivity()) throw NetworkException("Sin conexión para obtener el historial de pedidos.");
