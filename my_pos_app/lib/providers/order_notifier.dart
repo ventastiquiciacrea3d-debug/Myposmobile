@@ -176,13 +176,31 @@ class CurrentOrder extends _$CurrentOrder {
         if (orderToSave.items.isNotEmpty ||
             orderToSave.customerName != 'Cliente General' ||
             orderToSave.id != hiveCurrentOrderPendingKey) {
+
+          // ═══════════════════════════════════════════════════════════════
+          // PASO 1: Guardar en LOCAL (Hive/ObjectBox)
+          // ═══════════════════════════════════════════════════════════════
           await _orderRepository.savePendingOrder(orderToSave, keyToSave);
-          debugPrint("[CurrentOrder] Order saved to Hive with key $keyToSave");
+          debugPrint("[CurrentOrder] ✅ Order saved to LOCAL with key $keyToSave");
+
+          // ═══════════════════════════════════════════════════════════════
+          // PASO 2: Enviar a WooCommerce como status='pending' (CSV Línea 10)
+          // ═══════════════════════════════════════════════════════════════
+          // Según CSV: "enviar a woocommerce como pedido sin completar para
+          // que guarde por 5 minutos los productos y estos se disminuya del
+          // stock si se cancela volverá la cantidad exacta"
+          if (orderToSave.items.isNotEmpty) {
+            _sendDraftToWooCommerce(orderToSave);
+          }
+
         } else if (keyToSave == hiveCurrentOrderPendingKey &&
                    orderToSave.items.isEmpty &&
                    orderToSave.customerName == 'Cliente General') {
           await _orderRepository.removePendingOrder(hiveCurrentOrderPendingKey);
           debugPrint("[CurrentOrder] Empty current order draft removed from Hive");
+
+          // Si se eliminó el borrador local, también cancelar en WooCommerce
+          _cancelDraftInWooCommerce();
         }
       } catch (e) {
         debugPrint("[CurrentOrder] !! ERROR saving order to Hive: $e");
@@ -1086,6 +1104,84 @@ class CurrentOrder extends _$CurrentOrder {
       debugPrint("Error actualizando variante en CurrentOrder: $e");
       _setError("Error al actualizar la variante del producto: ${e.toString()}", durationSeconds: 5);
       return false;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // ✅ CSV LÍNEA 10: Enviar borrador a WooCommerce como 'pending'
+  // ═══════════════════════════════════════════════════════════════
+
+  String? _currentDraftWooCommerceId; // Guardar ID del pedido 'pending' en WC
+
+  /// Enviar borrador a WooCommerce como status='pending' para reservar stock
+  ///
+  /// Según CSV línea 10: "enviar a woocommerce como pedido sin completar
+  /// para que guarde por 5 minutos los productos y estos se disminuya del
+  /// stock si se cancela volverá la cantidad exacta"
+  Future<void> _sendDraftToWooCommerce(Order draft) async {
+    try {
+      debugPrint("[CurrentOrder] 🔄 Enviando borrador a WooCommerce como 'pending'...");
+
+      // Crear pedido en WooCommerce con status='pending'
+      final draftForWC = draft.copyWith(
+        orderStatus: 'pending', // ← Estado 'pending' reserva stock
+      );
+
+      // Enviar a WooCommerce
+      final wooCommerceId = await _wooCommerceService.createOrderAPI(draftForWC);
+
+      if (wooCommerceId != null) {
+        _currentDraftWooCommerceId = wooCommerceId;
+
+        debugPrint(
+          "[CurrentOrder] ✅ Borrador enviado a WC como 'pending' (ID: $wooCommerceId)\n"
+          "    Stock reservado por 5 minutos en WooCommerce"
+        );
+
+        // Actualizar orden local con el ID de WooCommerce
+        final updatedDraft = draft.copyWith(id: wooCommerceId);
+        await _orderRepository.savePendingOrder(updatedDraft, hiveCurrentOrderPendingKey);
+
+      } else {
+        debugPrint("[CurrentOrder] ⚠️ WooCommerce no retornó ID para el borrador");
+      }
+
+    } catch (e) {
+      // No es crítico si falla - el borrador ya está guardado localmente
+      debugPrint("[CurrentOrder] ⚠️ Error enviando borrador a WC (no crítico): $e");
+    }
+  }
+
+  /// Cancelar borrador en WooCommerce cuando se elimina localmente
+  ///
+  /// Esto libera el stock reservado en WooCommerce
+  Future<void> _cancelDraftInWooCommerce() async {
+    if (_currentDraftWooCommerceId == null) {
+      return; // No hay borrador en WC para cancelar
+    }
+
+    try {
+      debugPrint(
+        "[CurrentOrder] 🔄 Cancelando borrador en WooCommerce "
+        "(ID: $_currentDraftWooCommerceId)..."
+      );
+
+      // Cambiar status a 'cancelled' o eliminar el pedido
+      await _wooCommerceService.updateOrderStatus(
+        _currentDraftWooCommerceId!,
+        'cancelled',
+      );
+
+      debugPrint(
+        "[CurrentOrder] ✅ Borrador cancelado en WC\n"
+        "    Stock liberado automáticamente"
+      );
+
+      _currentDraftWooCommerceId = null;
+
+    } catch (e) {
+      debugPrint("[CurrentOrder] ⚠️ Error cancelando borrador en WC: $e");
+      // No crítico - WooCommerce tiene timeout automático de 5 minutos
     }
   }
 }

@@ -8,6 +8,7 @@ import 'package:crypto/crypto.dart';
 import 'woocommerce_service.dart';
 import 'storage_service.dart';
 import '../models/product.dart';
+import '../models/order.dart' as model; // ✅ Para sincronización WC → APP
 
 /// Delta Sync Service - Sincronización Incremental
 ///
@@ -280,5 +281,193 @@ class DeltaSyncService extends ChangeNotifier {
     notifyListeners();
 
     await performDeltaSync(forceFullSync: true);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // ✅ CSV LÍNEA 34: Sincronización bidireccional WC → APP
+  // ═══════════════════════════════════════════════════════════════
+
+  int _ordersUpdated = 0;
+  int _inventoryMovementsUpdated = 0;
+
+  int get ordersUpdated => _ordersUpdated;
+  int get inventoryMovementsUpdated => _inventoryMovementsUpdated;
+
+  /// Sincronizar pedidos desde WooCommerce hacia la App
+  ///
+  /// Según CSV línea 34: "cuando se hace desde wordpress deberá enviar
+  /// el nuevo pedido a la aplicación para que la aplicación detecte el
+  /// nuevo pedido y la aplicación modifique la base de datos como ajuste
+  /// en los productos por el nuevo pedido"
+  Future<void> syncOrdersFromWooCommerce() async {
+    try {
+      debugPrint('[DeltaSync] 🔄 Sincronizando pedidos desde WooCommerce...');
+
+      final prefs = await SharedPreferences.getInstance();
+      final lastOrderSyncTimestamp = prefs.getInt('last_order_sync_timestamp') ?? 0;
+
+      // Obtener pedidos nuevos/modificados desde última sincronización
+      final ordersResponse = await _wooService.getOrdersDelta(
+        since: lastOrderSyncTimestamp,
+      );
+
+      final orders = ordersResponse['orders'] as List? ?? [];
+      final serverTime = ordersResponse['server_time'] as int? ?? 0;
+
+      debugPrint('[DeltaSync] Recibidos ${orders.length} pedidos nuevos/modificados');
+
+      _ordersUpdated = 0;
+
+      for (final orderData in orders) {
+        try {
+          // Convertir a modelo Order
+          final order = model.Order.fromJson(orderData);
+
+          // Guardar en ObjectBox
+          await _storageService.saveCompletedOrder(order);
+
+          // RESTAR stock en ObjectBox para cada item del pedido
+          for (final item in order.items) {
+            final product = await _getProductFromLocal(item.productId);
+
+            if (product != null) {
+              final currentStock = product.stockQuantity ?? 0;
+              final newStock = currentStock - item.quantity;
+
+              debugPrint(
+                '[DeltaSync] 📦 Ajustando stock LOCAL por pedido desde WC:\n'
+                '    Producto: ${product.name}\n'
+                '    Stock antes: $currentStock\n'
+                '    Vendido: ${item.quantity}\n'
+                '    Stock después: $newStock'
+              );
+
+              // Actualizar stock en ObjectBox
+              final updatedProduct = product.copyWith(
+                stockQuantity: () => newStock,
+                stockStatus: () => newStock > 0 ? 'instock' : 'outofstock',
+              );
+
+              await _storageService.cacheProduct(updatedProduct);
+            }
+          }
+
+          _ordersUpdated++;
+
+        } catch (e) {
+          debugPrint('[DeltaSync] ❌ Error procesando pedido: $e');
+        }
+      }
+
+      // Actualizar timestamp de última sincronización de pedidos
+      await prefs.setInt('last_order_sync_timestamp', serverTime);
+
+      debugPrint('[DeltaSync] ✅ Sincronización de pedidos completada: $_ordersUpdated pedidos');
+      notifyListeners();
+
+    } catch (e) {
+      debugPrint('[DeltaSync] ❌ Error sincronizando pedidos: $e');
+    }
+  }
+
+  /// Sincronizar movimientos de inventario desde WooCommerce hacia la App
+  ///
+  /// Según CSV líneas 29-32: "cuando se hace desde el plugin de wordpress
+  /// deberá enviar el nuevo movimiento de inventario para que la aplicación
+  /// detecte el movimiento de inventario y la aplicación modifique la base
+  /// de datos como ajuste en los productos"
+  Future<void> syncInventoryMovementsFromWooCommerce() async {
+    try {
+      debugPrint('[DeltaSync] 🔄 Sincronizando movimientos de inventario desde WC...');
+
+      final prefs = await SharedPreferences.getInstance();
+      final lastInventorySyncTimestamp = prefs.getInt('last_inventory_sync_timestamp') ?? 0;
+
+      // Obtener movimientos de inventario nuevos desde última sincronización
+      final inventoryResponse = await _wooService.getInventoryDelta(
+        since: lastInventorySyncTimestamp,
+      );
+
+      final movements = inventoryResponse['movements'] as List? ?? [];
+      final serverTime = inventoryResponse['server_time'] as int? ?? 0;
+
+      debugPrint('[DeltaSync] Recibidos ${movements.length} movimientos de inventario');
+
+      _inventoryMovementsUpdated = 0;
+
+      for (final movementData in movements) {
+        try {
+          final productId = movementData['product_id'] as String;
+          final quantityChange = movementData['quantity_change'] as int;
+          final movementType = movementData['type'] as String;
+
+          final product = await _getProductFromLocal(productId);
+
+          if (product != null) {
+            final currentStock = product.stockQuantity ?? 0;
+            final newStock = currentStock + quantityChange;
+
+            debugPrint(
+              '[DeltaSync] 📦 Ajustando stock LOCAL por movimiento desde WC:\n'
+              '    Producto: ${product.name}\n'
+              '    Tipo: $movementType\n'
+              '    Stock antes: $currentStock\n'
+              '    Cambio: $quantityChange\n'
+              '    Stock después: $newStock'
+            );
+
+            // Actualizar stock en ObjectBox
+            final updatedProduct = product.copyWith(
+              stockQuantity: () => newStock,
+              stockStatus: () => newStock > 0 ? 'instock' : 'outofstock',
+            );
+
+            await _storageService.cacheProduct(updatedProduct);
+            _inventoryMovementsUpdated++;
+          }
+
+        } catch (e) {
+          debugPrint('[DeltaSync] ❌ Error procesando movimiento de inventario: $e');
+        }
+      }
+
+      // Actualizar timestamp de última sincronización de inventario
+      await prefs.setInt('last_inventory_sync_timestamp', serverTime);
+
+      debugPrint(
+        '[DeltaSync] ✅ Sincronización de inventario completada: '
+        '$_inventoryMovementsUpdated movimientos'
+      );
+      notifyListeners();
+
+    } catch (e) {
+      debugPrint('[DeltaSync] ❌ Error sincronizando inventario: $e');
+    }
+  }
+
+  /// Sincronización completa bidireccional (productos + pedidos + inventario)
+  Future<void> performFullBidirectionalSync() async {
+    debugPrint('[DeltaSync] 🔄 Iniciando sincronización bidireccional completa...');
+
+    await performDeltaSync(); // Productos (ya existe)
+    await syncOrdersFromWooCommerce(); // Pedidos WC → APP
+    await syncInventoryMovementsFromWooCommerce(); // Inventario WC → APP
+
+    debugPrint(
+      '[DeltaSync] ✅ Sincronización bidireccional completada:\n'
+      '    Productos actualizados: $productsUpdated\n'
+      '    Pedidos sincronizados: $ordersUpdated\n'
+      '    Movimientos de inventario: $inventoryMovementsUpdated'
+    );
+  }
+
+  /// Helper: Obtener producto desde ObjectBox
+  Future<Product?> _getProductFromLocal(String productId) async {
+    try {
+      return _storageService.getProductById(productId);
+    } catch (e) {
+      debugPrint('[DeltaSync] ⚠️ Producto $productId no encontrado en local');
+      return null;
+    }
   }
 }
