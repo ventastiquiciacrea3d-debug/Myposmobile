@@ -300,11 +300,28 @@ class _SplashScreenState extends ConsumerState<SplashScreen> with SingleTickerPr
 
                       return coreServicesAsync.when(
                         data: (_) {
+                          String statusText;
+                          Color statusColor = Colors.white70;
+
+                          if (appState.isLoading) {
+                            statusText = "Servicios listos, configurando app...";
+                          } else if (!appState.isAppConfigured) {
+                            statusText = "✓ Servicios OK, requiere config";
+                          } else if (!appState.isOnline) {
+                            statusText = "⚠️ Sin conexión a internet";
+                            statusColor = Colors.orange;
+                          } else if (!appState.isApiConnected) {
+                            statusText = "❌ ${appState.apiConnectionError ?? 'API no conectada'}";
+                            statusColor = Colors.redAccent;
+                          } else {
+                            statusText = "✓ Todo listo - API conectada";
+                            statusColor = Colors.greenAccent;
+                          }
+
                           return Text(
-                            appState.isLoading
-                                ? "Servicios listos, configurando app..."
-                                : (appState.isAppConfigured ? "✓ Todo listo" : "✓ Servicios OK, requiere config"),
-                            style: const TextStyle(color: Colors.white70, fontSize: 10),
+                            statusText,
+                            style: TextStyle(color: statusColor, fontSize: 10),
+                            textAlign: TextAlign.center,
                           );
                         },
                         loading: () => const Text(

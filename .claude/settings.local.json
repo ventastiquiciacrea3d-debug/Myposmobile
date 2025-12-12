@@ -25,7 +25,8 @@
       "Bash(unzip:*)",
       "Bash(timeout 2 cat:*)",
       "Bash(flutter pub run build_runner build:*)",
-      "Bash(flutter analyze:*)"
+      "Bash(flutter analyze:*)",
+      "Bash(if exist nul del /F /Q nul)"
     ],
     "deny": [],
     "ask": []

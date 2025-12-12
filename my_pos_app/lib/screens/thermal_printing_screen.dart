@@ -13,8 +13,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/label_print_item.dart';
 import '../providers/label_notifier.dart';
 import '../widgets/app_header.dart';
+import '../repositories/inventory_repository.dart';
 import '../locator.dart';
 import '../utils/tspl_generator.dart';
+import '../config/routes.dart';
 
 /// ✓ FASE 2 RIVERPOD: Migrado a ConsumerStatefulWidget
 class ThermalPrintingScreen extends ConsumerStatefulWidget {
@@ -477,7 +479,47 @@ class _ThermalPrintingScreenState extends ConsumerState<ThermalPrintingScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: const AppHeader(title: 'Impresión Térmica', showBackButton: true),
+      appBar: AppBar(
+        automaticallyImplyLeading: false,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          tooltip: 'Volver',
+          onPressed: () => Routes.goBack(context),
+        ),
+        title: const Text('Impresión Térmica'),
+        centerTitle: true,
+        actions: [
+          // ✅ LOCAL-FIRST: Badge para movimientos pendientes de sincronización
+          FutureBuilder<int>(
+            future: getIt<InventoryRepository>().getUnsyncedMovementsCount(),
+            builder: (context, snapshot) {
+              final count = snapshot.data ?? 0;
+              return IconButton(
+                icon: Badge(
+                  label: Text(count.toString()),
+                  isLabelVisible: count > 0,
+                  backgroundColor: Colors.orange,
+                  child: const Icon(Icons.sync_problem_outlined),
+                ),
+                tooltip: count > 0
+                    ? 'Movimientos pendientes de sincronizar: $count'
+                    : 'Todos los movimientos sincronizados',
+                onPressed: count > 0
+                    ? () {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('$count movimientos pendientes de sincronizar con tienda online'),
+                            duration: const Duration(seconds: 3),
+                          ),
+                        );
+                      }
+                    : null,
+              );
+            },
+          ),
+          const SizedBox(width: 8),
+        ],
+      ),
       body: _buildBody(),
       bottomSheet: _buildPrintButton(),
     );

@@ -16,6 +16,8 @@ import '../providers/inventory_notifier.dart';
 import '../providers/label_notifier.dart';
 import '../providers/app_state_notifier.dart';
 import '../repositories/product_repository.dart';
+import '../repositories/inventory_repository.dart';
+import '../services/sync_manager.dart';
 import '../locator.dart';
 import '../widgets/app_header.dart';
 import '../widgets/quantity_selector.dart';
@@ -79,6 +81,7 @@ class _InventoryAdjustmentFormScreenState
   int? _editingBatchItemIndex;
   Timer? _cacheSaveDebounce;
   bool _sendPositiveAdjustmentsToLabelQueue = false;
+  bool _isSyncing = false; // ✅ LOCAL-FIRST: Track sync operation
 
   bool get _isStockTakeMode => _overallMovementType == InventoryMovementType.stockCorrection;
   bool get _isEntryMode {
@@ -1251,6 +1254,43 @@ class _InventoryAdjustmentFormScreenState
     }
   }
 
+  /// ✅ LOCAL-FIRST: Forzar sincronización manual de movimientos pendientes
+  Future<void> _triggerManualSync() async {
+    if (_isSyncing) return;
+
+    setState(() => _isSyncing = true);
+
+    try {
+      final syncManager = getIt<SyncManager>();
+      await syncManager.triggerSync();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✅ Sincronización completada'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('[InventoryAdjustmentForm] ❌ Error en sincronización manual: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error al sincronizar: ${e.toString()}'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isSyncing = false);
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -1284,12 +1324,61 @@ class _InventoryAdjustmentFormScreenState
           FocusScope.of(context).unfocus();
         },
         child: Scaffold(
-          appBar: AppHeader(
-            title: _screenTitle,
-            showBackButton: true,
-            onBackPressed: () => Navigator.maybePop(context),
-            showCartButton: false,
-            showSettingsButton: false,
+          appBar: AppBar(
+            automaticallyImplyLeading: false,
+            leading: IconButton(
+              icon: const Icon(Icons.arrow_back),
+              tooltip: 'Volver',
+              onPressed: () => Navigator.maybePop(context),
+            ),
+            title: Text(_screenTitle),
+            centerTitle: true,
+            actions: [
+              // ✅ LOCAL-FIRST: Badge para movimientos pendientes de sincronización
+              FutureBuilder<int>(
+                future: getIt<InventoryRepository>().getUnsyncedMovementsCount(),
+                builder: (context, snapshot) {
+                  final count = snapshot.data ?? 0;
+                  return IconButton(
+                    icon: Badge(
+                      label: Text(count.toString()),
+                      isLabelVisible: count > 0,
+                      backgroundColor: Colors.orange,
+                      child: const Icon(Icons.sync_problem_outlined),
+                    ),
+                    tooltip: count > 0
+                        ? 'Movimientos pendientes de sincronizar: $count'
+                        : 'Todos los movimientos sincronizados',
+                    onPressed: count > 0
+                        ? () {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('$count movimientos pendientes de sincronizar con tienda online'),
+                                duration: const Duration(seconds: 3),
+                              ),
+                            );
+                          }
+                        : null,
+                  );
+                },
+              ),
+              // ✅ LOCAL-FIRST: Botón para forzar sincronización manual
+              IconButton(
+                icon: _isSyncing
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                        ),
+                      )
+                    : const Icon(Icons.sync),
+                tooltip: 'Sincronizar ahora',
+                onPressed: _isSyncing ? null : _triggerManualSync,
+              ),
+              const SizedBox(width: 8),
+            ],
           ),
           body: Column(
             children: [

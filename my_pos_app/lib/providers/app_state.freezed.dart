@@ -21,6 +21,10 @@ mixin _$AppState {
   bool get isAppConfigured => throw _privateConstructorUsedError;
   bool get isLoading => throw _privateConstructorUsedError;
   bool get isFullyInitialized => throw _privateConstructorUsedError;
+  bool get isApiConnected =>
+      throw _privateConstructorUsedError; // ✅ VERIFICACIÓN API: Estado de conexión a la API
+  String? get apiConnectionError =>
+      throw _privateConstructorUsedError; // ✅ VERIFICACIÓN API: Error de conexión si existe
   String? get appError => throw _privateConstructorUsedError;
   String? get appNotification => throw _privateConstructorUsedError;
   bool get isSyncing => throw _privateConstructorUsedError;
@@ -46,6 +50,8 @@ abstract class $AppStateCopyWith<$Res> {
       bool isAppConfigured,
       bool isLoading,
       bool isFullyInitialized,
+      bool isApiConnected,
+      String? apiConnectionError,
       String? appError,
       String? appNotification,
       bool isSyncing,
@@ -74,6 +80,8 @@ class _$AppStateCopyWithImpl<$Res, $Val extends AppState>
     Object? isAppConfigured = null,
     Object? isLoading = null,
     Object? isFullyInitialized = null,
+    Object? isApiConnected = null,
+    Object? apiConnectionError = freezed,
     Object? appError = freezed,
     Object? appNotification = freezed,
     Object? isSyncing = null,
@@ -102,6 +110,14 @@ class _$AppStateCopyWithImpl<$Res, $Val extends AppState>
           ? _value.isFullyInitialized
           : isFullyInitialized // ignore: cast_nullable_to_non_nullable
               as bool,
+      isApiConnected: null == isApiConnected
+          ? _value.isApiConnected
+          : isApiConnected // ignore: cast_nullable_to_non_nullable
+              as bool,
+      apiConnectionError: freezed == apiConnectionError
+          ? _value.apiConnectionError
+          : apiConnectionError // ignore: cast_nullable_to_non_nullable
+              as String?,
       appError: freezed == appError
           ? _value.appError
           : appError // ignore: cast_nullable_to_non_nullable
@@ -144,6 +160,8 @@ abstract class _$$AppStateImplCopyWith<$Res>
       bool isAppConfigured,
       bool isLoading,
       bool isFullyInitialized,
+      bool isApiConnected,
+      String? apiConnectionError,
       String? appError,
       String? appNotification,
       bool isSyncing,
@@ -170,6 +188,8 @@ class __$$AppStateImplCopyWithImpl<$Res>
     Object? isAppConfigured = null,
     Object? isLoading = null,
     Object? isFullyInitialized = null,
+    Object? isApiConnected = null,
+    Object? apiConnectionError = freezed,
     Object? appError = freezed,
     Object? appNotification = freezed,
     Object? isSyncing = null,
@@ -198,6 +218,14 @@ class __$$AppStateImplCopyWithImpl<$Res>
           ? _value.isFullyInitialized
           : isFullyInitialized // ignore: cast_nullable_to_non_nullable
               as bool,
+      isApiConnected: null == isApiConnected
+          ? _value.isApiConnected
+          : isApiConnected // ignore: cast_nullable_to_non_nullable
+              as bool,
+      apiConnectionError: freezed == apiConnectionError
+          ? _value.apiConnectionError
+          : apiConnectionError // ignore: cast_nullable_to_non_nullable
+              as String?,
       appError: freezed == appError
           ? _value.appError
           : appError // ignore: cast_nullable_to_non_nullable
@@ -235,6 +263,8 @@ class _$AppStateImpl extends _AppState with DiagnosticableTreeMixin {
       this.isAppConfigured = false,
       this.isLoading = true,
       this.isFullyInitialized = false,
+      this.isApiConnected = false,
+      this.apiConnectionError,
       this.appError,
       this.appNotification,
       this.isSyncing = false,
@@ -259,6 +289,13 @@ class _$AppStateImpl extends _AppState with DiagnosticableTreeMixin {
   @JsonKey()
   final bool isFullyInitialized;
   @override
+  @JsonKey()
+  final bool isApiConnected;
+// ✅ VERIFICACIÓN API: Estado de conexión a la API
+  @override
+  final String? apiConnectionError;
+// ✅ VERIFICACIÓN API: Error de conexión si existe
+  @override
   final String? appError;
   @override
   final String? appNotification;
@@ -275,7 +312,7 @@ class _$AppStateImpl extends _AppState with DiagnosticableTreeMixin {
 
   @override
   String toString({DiagnosticLevel minLevel = DiagnosticLevel.info}) {
-    return 'AppState(connectionMode: $connectionMode, connectionStatus: $connectionStatus, isAppConfigured: $isAppConfigured, isLoading: $isLoading, isFullyInitialized: $isFullyInitialized, appError: $appError, appNotification: $appNotification, isSyncing: $isSyncing, currentSyncTask: $currentSyncTask, syncError: $syncError, syncProgressMessage: $syncProgressMessage)';
+    return 'AppState(connectionMode: $connectionMode, connectionStatus: $connectionStatus, isAppConfigured: $isAppConfigured, isLoading: $isLoading, isFullyInitialized: $isFullyInitialized, isApiConnected: $isApiConnected, apiConnectionError: $apiConnectionError, appError: $appError, appNotification: $appNotification, isSyncing: $isSyncing, currentSyncTask: $currentSyncTask, syncError: $syncError, syncProgressMessage: $syncProgressMessage)';
   }
 
   @override
@@ -288,6 +325,8 @@ class _$AppStateImpl extends _AppState with DiagnosticableTreeMixin {
       ..add(DiagnosticsProperty('isAppConfigured', isAppConfigured))
       ..add(DiagnosticsProperty('isLoading', isLoading))
       ..add(DiagnosticsProperty('isFullyInitialized', isFullyInitialized))
+      ..add(DiagnosticsProperty('isApiConnected', isApiConnected))
+      ..add(DiagnosticsProperty('apiConnectionError', apiConnectionError))
       ..add(DiagnosticsProperty('appError', appError))
       ..add(DiagnosticsProperty('appNotification', appNotification))
       ..add(DiagnosticsProperty('isSyncing', isSyncing))
@@ -311,6 +350,10 @@ class _$AppStateImpl extends _AppState with DiagnosticableTreeMixin {
                 other.isLoading == isLoading) &&
             (identical(other.isFullyInitialized, isFullyInitialized) ||
                 other.isFullyInitialized == isFullyInitialized) &&
+            (identical(other.isApiConnected, isApiConnected) ||
+                other.isApiConnected == isApiConnected) &&
+            (identical(other.apiConnectionError, apiConnectionError) ||
+                other.apiConnectionError == apiConnectionError) &&
             (identical(other.appError, appError) ||
                 other.appError == appError) &&
             (identical(other.appNotification, appNotification) ||
@@ -333,6 +376,8 @@ class _$AppStateImpl extends _AppState with DiagnosticableTreeMixin {
       isAppConfigured,
       isLoading,
       isFullyInitialized,
+      isApiConnected,
+      apiConnectionError,
       appError,
       appNotification,
       isSyncing,
@@ -356,6 +401,8 @@ abstract class _AppState extends AppState {
       final bool isAppConfigured,
       final bool isLoading,
       final bool isFullyInitialized,
+      final bool isApiConnected,
+      final String? apiConnectionError,
       final String? appError,
       final String? appNotification,
       final bool isSyncing,
@@ -374,6 +421,11 @@ abstract class _AppState extends AppState {
   bool get isLoading;
   @override
   bool get isFullyInitialized;
+  @override
+  bool get isApiConnected; // ✅ VERIFICACIÓN API: Estado de conexión a la API
+  @override
+  String?
+      get apiConnectionError; // ✅ VERIFICACIÓN API: Error de conexión si existe
   @override
   String? get appError;
   @override

@@ -212,6 +212,10 @@ class Inventory extends _$Inventory {
 
   // ========== MASS INVENTORY ADJUSTMENT ==========
 
+  /// ✅ LOCAL-FIRST: Ajuste de inventario masivo
+  /// 1. Actualiza ObjectBox INMEDIATAMENTE (independiente)
+  /// 2. Guarda movimiento en historial local
+  /// 3. Sincroniza con WooCommerce en background (no bloquea)
   Future<bool> performMassInventoryAdjustment({
     required InventoryMovementType type,
     required String description,
@@ -228,15 +232,94 @@ class Inventory extends _$Inventory {
       type: type,
       description: description.isEmpty ? type.displayName : description,
       items: itemsToAdjust,
-      isSynced: false,
+      isSynced: false, // Inicialmente NO sincronizado
     );
 
     state = state.copyWith(isLoadingProducts: true);
     debugPrint(
-        "[Inventory] Performing mass adjustment: ${newMovement.description}, Items: ${itemsToAdjust.length}");
+        "[Inventory] 🔄 LOCAL-FIRST: Ajuste masivo - ${newMovement.description}, Items: ${itemsToAdjust.length}");
 
     try {
-      // ✓ V3.1.0: Preparar batch de actualizaciones (80% más rápido)
+      // ═══════════════════════════════════════════════════════════════
+      // PASO 1: ACTUALIZAR BASE DE DATOS LOCAL INMEDIATAMENTE
+      // ═══════════════════════════════════════════════════════════════
+      final productRepo = ref.read(productRepositoryProvider);
+
+      for (final item in itemsToAdjust) {
+        try {
+          final product = await productRepo.getProductById(item.productId, forceApi: false);
+          if (product == null) {
+            debugPrint('[Inventory] ⚠️ Producto no encontrado en local: ${item.productId}');
+            continue;
+          }
+
+          final stockBefore = product.stockQuantity ?? 0;
+          final stockAfter = stockBefore + item.quantityChanged;
+
+          debugPrint('[Inventory] 📦 Actualizando stock LOCAL: ${product.name}');
+          debugPrint('    Antes: $stockBefore → Después: $stockAfter (Δ ${item.quantityChanged})');
+
+          // Crear nueva instancia con stock actualizado
+          final updatedProduct = product.copyWith(
+            stockQuantity: () => stockAfter,
+            stockStatus: () => stockAfter > 0 ? 'instock' : 'outofstock',
+            dateModified: DateTime.now(),
+          );
+
+          // Guardar en ObjectBox INMEDIATAMENTE
+          await _storageService.cacheProduct(updatedProduct);
+
+        } catch (e) {
+          debugPrint('[Inventory] ❌ Error actualizando stock local para ${item.productId}: $e');
+          // Continuar con los demás productos
+        }
+      }
+
+      debugPrint('[Inventory] ✅ Stock local actualizado para ${itemsToAdjust.length} productos');
+
+      // ═══════════════════════════════════════════════════════════════
+      // PASO 2: GUARDAR MOVIMIENTO EN HISTORIAL LOCAL
+      // ═══════════════════════════════════════════════════════════════
+      try {
+        await _inventoryRepository.saveInventoryMovement(newMovement);
+        debugPrint('[Inventory] ✅ Movimiento guardado en historial local (isSynced: false)');
+      } catch (e) {
+        debugPrint('[Inventory] ⚠️ Error guardando movimiento en ObjectBox: $e');
+        // No es crítico, continuar
+      }
+
+      // ═══════════════════════════════════════════════════════════════
+      // PASO 3: REFRESCAR UI CON DATOS LOCALES
+      // ═══════════════════════════════════════════════════════════════
+      await loadInventoryMovements(refresh: true);
+      _setError('✅ Inventario actualizado localmente', durationSeconds: 3);
+
+      state = state.copyWith(isLoadingProducts: false);
+
+      // ═══════════════════════════════════════════════════════════════
+      // PASO 4: SINCRONIZAR CON WOOCOMMERCE EN BACKGROUND (NO BLOQUEA)
+      // ═══════════════════════════════════════════════════════════════
+      _syncInventoryWithWooCommerce(newMovement, itemsToAdjust);
+
+      return true;
+
+    } catch (e) {
+      debugPrint('[Inventory] ❌ Error crítico en ajuste local: $e');
+      _setError("Error crítico: ${e.toString()}", durationSeconds: 8);
+      state = state.copyWith(isLoadingProducts: false);
+      return false;
+    }
+  }
+
+  /// Sincronización con WooCommerce en background (INDEPENDIENTE del flujo local)
+  Future<void> _syncInventoryWithWooCommerce(
+    InventoryMovement movement,
+    List<InventoryMovementLine> itemsToAdjust,
+  ) async {
+    debugPrint('[Inventory] 🔄 Iniciando sincronización con WooCommerce (background)...');
+
+    try {
+      // Preparar batch de actualizaciones para WooCommerce
       final batchItems = itemsToAdjust.map((item) {
         return {
           'id': item.productId,
@@ -245,73 +328,82 @@ class Inventory extends _$Inventory {
         };
       }).toList();
 
-      debugPrint("[Inventory] Sending batch update with ${batchItems.length} items");
-
-      // ✓ V3.1.0: Enviar en batch (1 request en lugar de N requests)
+      // Enviar a WooCommerce
       final response = await _wooService.batchUpdateStock(batchItems);
 
       if (response['success'] == true) {
         final updated = response['updated'] as int? ?? 0;
+        debugPrint('[Inventory] ✅ Sincronizado con WooCommerce: $updated productos');
 
-        debugPrint('[Inventory] ✅ Batch adjustment completed: $updated products');
+        // Actualizar estado de sincronización del movimiento
+        try {
+          final syncedMovement = InventoryMovement(
+            id: movement.id,
+            date: movement.date,
+            type: movement.type,
+            description: movement.description,
+            items: movement.items,
+            isSynced: true, // ✅ Ahora SÍ está sincronizado
+          );
+          await _inventoryRepository.saveInventoryMovement(syncedMovement);
+          debugPrint('[Inventory] ✅ Movimiento marcado como sincronizado en ObjectBox');
 
-        // ✅ FIX: Actualizar stock local inmediatamente
-        final productRepo = ref.read(productRepositoryProvider);
-        for (final item in itemsToAdjust) {
-          try {
-            final product = await productRepo.getProductById(item.productId, forceApi: false);
-            if (product != null) {
-              final stockBefore = product.stockQuantity ?? 0;
-              final stockAfter = stockBefore + item.quantityChanged;
-
-              debugPrint('[Inventory] 📦 Actualizando stock local: ${product.name} - Antes: $stockBefore, Después: $stockAfter');
-
-              // Crear nueva instancia con stock actualizado
-              final updatedProduct = product.copyWith(
-                stockQuantity: () => stockAfter,
-                stockStatus: () => stockAfter > 0 ? 'instock' : 'outofstock',
-              );
-
-              // Guardar en ObjectBox
-              await _storageService.cacheProduct(updatedProduct);
-            }
-          } catch (e) {
-            debugPrint('[Inventory] ⚠️ Error actualizando stock local para ${item.productId}: $e');
-          }
+          // Mostrar notificación discreta de éxito
+          _setError('✅ Sincronizado con tienda online', durationSeconds: 2);
+        } catch (e) {
+          debugPrint('[Inventory] ⚠️ Error actualizando estado de sincronización: $e');
         }
 
+        // Refrescar lista para mostrar estado actualizado
         await loadInventoryMovements(refresh: true);
-        _setError('Ajuste aplicado: $updated productos actualizados', durationSeconds: 5);
 
-        return true;
       } else {
-        _setError('Error al aplicar ajuste de inventario');
-        return false;
+        throw Exception('Respuesta no exitosa de WooCommerce');
       }
-    } on NetworkException {
-      _setError(
-          "Error de red. El ajuste fue encolado para sincronización.",
-          durationSeconds: 8);
 
-      // ✓ PROPUESTA 2: Prioridad alta (por defecto) e idempotency key auto-generado
+    } on NetworkException {
+      debugPrint('[Inventory] ⚠️ Sin conexión - Encolando para sincronización posterior');
+
+      // Agregar a cola de sincronización para reintentar más tarde
       await _syncManager.addOperation(
         SyncOperationType.inventoryAdjustment,
-        {'movement': newMovement.toJson()},
+        {'movement': movement.toJson()},
       );
 
-      // Add to local list
-      final updatedMovements = [newMovement, ...state.inventoryMovements];
-      state = state.copyWith(inventoryMovements: updatedMovements);
+      _setError('⚠️ Pendiente sincronizar con tienda (sin conexión)', durationSeconds: 3);
 
-      return false;
+    } on ServerException catch (e) {
+      debugPrint('[Inventory] ⚠️ Error del servidor - Encolando: ${e.message}');
+
+      // Agregar a cola de sincronización
+      await _syncManager.addOperation(
+        SyncOperationType.inventoryAdjustment,
+        {'movement': movement.toJson()},
+      );
+
+      _setError('⚠️ Pendiente sincronizar con tienda (error servidor)', durationSeconds: 3);
+
     } on ApiException catch (e) {
-      _setError("Error de API: ${e.message}", durationSeconds: 8);
-      return false;
+      debugPrint('[Inventory] ⚠️ Error de API - Encolando: ${e.message}');
+
+      // Agregar a cola de sincronización
+      await _syncManager.addOperation(
+        SyncOperationType.inventoryAdjustment,
+        {'movement': movement.toJson()},
+      );
+
+      _setError('⚠️ Pendiente sincronizar con tienda', durationSeconds: 3);
+
     } catch (e) {
-      _setError("Error inesperado: ${e.toString()}", durationSeconds: 8);
-      return false;
-    } finally {
-      state = state.copyWith(isLoadingProducts: false);
+      debugPrint('[Inventory] ❌ Error inesperado en sincronización: $e');
+
+      // Agregar a cola de sincronización
+      await _syncManager.addOperation(
+        SyncOperationType.inventoryAdjustment,
+        {'movement': movement.toJson()},
+      );
+
+      _setError('⚠️ Pendiente sincronizar con tienda', durationSeconds: 3);
     }
   }
 

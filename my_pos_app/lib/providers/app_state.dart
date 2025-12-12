@@ -17,6 +17,8 @@ class AppState with _$AppState {
     @Default(false) bool isAppConfigured,
     @Default(true) bool isLoading,
     @Default(false) bool isFullyInitialized,
+    @Default(false) bool isApiConnected, // ✅ VERIFICACIÓN API: Estado de conexión a la API
+    String? apiConnectionError, // ✅ VERIFICACIÓN API: Error de conexión si existe
     String? appError,
     String? appNotification,
     @Default(false) bool isSyncing,

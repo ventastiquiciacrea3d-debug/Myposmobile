@@ -13,6 +13,8 @@ import '../models/sync_operation.dart';
 import '../models/product_optimized.dart';
 import 'dart:math' show max;
 import '../objectbox.g.dart' hide Order; // ✓ PRIORIDAD 1: Para query helpers (ProductOptimized_), ocultar Order de ObjectBox
+import '../repositories/inventory_repository.dart'; // ✅ LOCAL-FIRST: Para actualizar sync status
+import '../locator.dart'; // Para obtener InventoryRepository
 
 enum SyncTask { none, pending, full }
 
@@ -379,8 +381,7 @@ class SyncManager extends ChangeNotifier {
         break;
 
       case SyncOperationType.inventoryAdjustment:
-        final movement = InventoryMovement.fromJson(operation.data['movement']);
-        await _wooCommerceService.submitInventoryAdjustment(movement);
+        await _processInventoryAdjustment(operation);
         break;
     }
   }
@@ -488,6 +489,51 @@ class SyncManager extends ChangeNotifier {
     } catch (e, stackTrace) {
       debugPrint("[SyncManager.rollback] ❌ ERROR during stock rollback: $e\n$stackTrace");
       // No rethrow - el rollback es best-effort, no crítico
+    }
+  }
+
+  /// ✅ LOCAL-FIRST: Procesar ajuste de inventario con reintento
+  /// Envía el batch a WooCommerce y actualiza el sync status en ObjectBox
+  Future<void> _processInventoryAdjustment(SyncOperation operation) async {
+    debugPrint("[SyncManager] 🔧 Processing inventory adjustment: ${operation.id}");
+
+    try {
+      final movement = InventoryMovement.fromJson(operation.data['movement']);
+
+      // Preparar batch de actualizaciones para WooCommerce
+      final batchItems = movement.items.map((item) {
+        return {
+          'id': item.productId,
+          'stock': item.quantityChanged.abs(),
+          'operation': item.quantityChanged > 0 ? 'add' : 'subtract',
+        };
+      }).toList();
+
+      debugPrint("[SyncManager] Sending batch to WooCommerce: ${batchItems.length} items");
+
+      // Enviar a WooCommerce
+      final response = await _wooCommerceService.batchUpdateStock(batchItems);
+
+      if (response['success'] == true) {
+        final updated = response['updated'] as int? ?? 0;
+        debugPrint('[SyncManager] ✅ Inventory adjustment synced to WooCommerce: $updated products');
+
+        // ✅ Actualizar estado de sincronización en ObjectBox
+        try {
+          final inventoryRepo = getIt<InventoryRepository>();
+          await inventoryRepo.updateMovementSyncStatus(movement.id, true);
+          debugPrint('[SyncManager] ✅ Movement ${movement.id} marked as synced in ObjectBox');
+        } catch (e) {
+          debugPrint('[SyncManager] ⚠️ Error updating sync status (non-critical): $e');
+          // No es crítico - la sincronización con WooCommerce fue exitosa
+        }
+      } else {
+        throw ApiException('WooCommerce returned success=false for batch update');
+      }
+
+    } catch (e) {
+      debugPrint('[SyncManager] ❌ Error processing inventory adjustment: $e');
+      rethrow; // Re-lanzar para que el manejador de sync lo capture y reintente
     }
   }
 

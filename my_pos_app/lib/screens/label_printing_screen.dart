@@ -13,6 +13,7 @@ import '../providers/scanner_state.dart';
 import '../widgets/app_header.dart';
 import '../widgets/quantity_selector.dart';
 import '../repositories/product_repository.dart';
+import '../repositories/inventory_repository.dart';
 import '../locator.dart';
 import '../config/routes.dart';
 
@@ -488,11 +489,51 @@ class _LabelPrintingScreenState extends ConsumerState<LabelPrintingScreen> {
     return GestureDetector(
       onTap: () => FocusScope.of(context).unfocus(),
       child: Scaffold(
-        appBar: AppHeader(
-          title: 'Impresión de Etiquetas',
-          showBackButton: true,
-          showSettingsButton: true,
-          onSettingsPressed: () => Routes.navigateTo(context, Routes.labelSettings),
+        appBar: AppBar(
+          automaticallyImplyLeading: false,
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            tooltip: 'Volver',
+            onPressed: () => Routes.goBack(context),
+          ),
+          title: const Text('Impresión de Etiquetas'),
+          centerTitle: true,
+          actions: [
+            // ✅ LOCAL-FIRST: Badge para movimientos pendientes de sincronización
+            FutureBuilder<int>(
+              future: getIt<InventoryRepository>().getUnsyncedMovementsCount(),
+              builder: (context, snapshot) {
+                final count = snapshot.data ?? 0;
+                return IconButton(
+                  icon: Badge(
+                    label: Text(count.toString()),
+                    isLabelVisible: count > 0,
+                    backgroundColor: Colors.orange,
+                    child: const Icon(Icons.sync_problem_outlined),
+                  ),
+                  tooltip: count > 0
+                      ? 'Movimientos pendientes de sincronizar: $count'
+                      : 'Todos los movimientos sincronizados',
+                  onPressed: count > 0
+                      ? () {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('$count movimientos pendientes de sincronizar con tienda online'),
+                              duration: const Duration(seconds: 3),
+                            ),
+                          );
+                        }
+                      : null,
+                );
+              },
+            ),
+            IconButton(
+              icon: const Icon(Icons.settings_outlined),
+              tooltip: 'Configuración',
+              onPressed: () => Routes.navigateTo(context, Routes.labelSettings),
+            ),
+            const SizedBox(width: 8),
+          ],
         ),
         body: Form(
           key: _formKey,

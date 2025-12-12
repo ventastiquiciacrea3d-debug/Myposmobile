@@ -465,6 +465,70 @@ class WooCommerceService {
     }
   }
 
+  /// ✅ VERIFICACIÓN AL INICIO: Verifica conectividad a la API usando credenciales guardadas
+  /// Retorna true si la API responde correctamente, false si falla
+  Future<bool> verifyApiConnection() async {
+    if (!_isInitialized) {
+      debugPrint("[WooCommerceService] verifyApiConnection() - Servicio no inicializado");
+      return false;
+    }
+
+    try {
+      debugPrint("[WooCommerceService] verifyApiConnection() - Iniciando verificación...");
+
+      // Verificar conectividad de red primero
+      if (!await _connectivityService.checkConnectivity()) {
+        debugPrint("[WooCommerceService] verifyApiConnection() - Sin conexión a internet");
+        return false;
+      }
+
+      final dio = await _getDioClient();
+
+      if (connectionMode == 'plugin') {
+        // Modo plugin: verificar endpoint personalizado
+        final response = await dio.get(
+          'wp-json/mypos/v1/status',
+          options: Options(sendTimeout: const Duration(seconds: 5), receiveTimeout: const Duration(seconds: 5)),
+        );
+
+        if (response.statusCode! >= 200 && response.statusCode! < 300) {
+          debugPrint("[WooCommerceService] verifyApiConnection() - ✅ Conexión exitosa (Plugin)");
+          return true;
+        }
+      } else {
+        // Modo estándar: verificar endpoint system_status
+        final response = await dio.get(
+          'wp-json/wc/v3/system_status',
+          options: Options(sendTimeout: const Duration(seconds: 5), receiveTimeout: const Duration(seconds: 5)),
+        );
+
+        if (response.statusCode! >= 200 && response.statusCode! < 300) {
+          final data = _tryParseResponseData(response);
+          if (data is Map && data.containsKey('environment')) {
+            debugPrint("[WooCommerceService] verifyApiConnection() - ✅ Conexión exitosa (WooCommerce)");
+            return true;
+          }
+        }
+      }
+
+      debugPrint("[WooCommerceService] verifyApiConnection() - ⚠️ Respuesta inesperada de la API");
+      return false;
+
+    } on DioException catch (e) {
+      if (e.type == DioExceptionType.connectionTimeout || e.type == DioExceptionType.receiveTimeout) {
+        debugPrint("[WooCommerceService] verifyApiConnection() - ❌ Timeout al conectar");
+      } else if (e.response?.statusCode == 401) {
+        debugPrint("[WooCommerceService] verifyApiConnection() - ❌ Error de autenticación");
+      } else {
+        debugPrint("[WooCommerceService] verifyApiConnection() - ❌ Error: ${e.message}");
+      }
+      return false;
+    } catch (e) {
+      debugPrint("[WooCommerceService] verifyApiConnection() - ❌ Error inesperado: $e");
+      return false;
+    }
+  }
+
   Future<Map<String, dynamic>> _searchProductsWithPluginApi(String query, {int page = 1, int perPage = 10, bool onlyInStock = false}) async {
     if (!_isInitialized) throw AuthenticationException("El servicio API no está inicializado.");
     final dio = await _getDioClient();

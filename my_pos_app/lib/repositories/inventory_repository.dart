@@ -622,6 +622,184 @@ class InventoryRepository {
     }
   }
 
+  // ==================== LOCAL-FIRST METHODS ====================
+
+  /// ✅ LOCAL-FIRST: Actualizar estado de sincronización de un movimiento
+  /// Usado cuando la sincronización con WooCommerce tiene éxito
+  Future<void> updateMovementSyncStatus(String movementId, bool isSynced) async {
+    debugPrint("[InventoryRepository] Updating sync status for movement: $movementId → isSynced: $isSynced");
+
+    if (_db == null || _converter == null) {
+      debugPrint("[InventoryRepository.updateMovementSyncStatus] ❌ ERROR: ObjectBox not initialized");
+      throw StateError('ObjectBox not initialized');
+    }
+
+    try {
+      final box = _db!.store.box<InventoryMovementCompact>();
+
+      // Buscar el movimiento por su movementId
+      final query = box.query(InventoryMovementCompact_.movementId.equals(movementId)).build();
+      final movement = query.findFirst();
+      query.close();
+
+      if (movement != null) {
+        // Actualizar el campo isSynced
+        movement.isSynced = isSynced;
+        box.put(movement);
+
+        debugPrint("[InventoryRepository] ✅ Sync status updated: $movementId → isSynced: $isSynced");
+
+        // Emitir evento de actualización
+        final fullMovement = _converter!.compactToMovement(movement);
+        _movementUpdateController.add(fullMovement);
+      } else {
+        debugPrint("[InventoryRepository] ⚠️ Movement not found: $movementId");
+      }
+    } catch (e) {
+      debugPrint("[InventoryRepository.updateMovementSyncStatus] ❌ Error: $e");
+      rethrow;
+    }
+  }
+
+  /// ✅ LOCAL-FIRST: Obtener movimientos locales (no depende de WooCommerce)
+  /// Retorna solo datos de ObjectBox, usado para mostrar historial offline
+  Future<List<InventoryMovement>> getLocalMovements({
+    int page = 1,
+    int perPage = 25,
+    bool onlyUnsynced = false,
+  }) async {
+    debugPrint("[InventoryRepository] Getting local movements (page: $page, perPage: $perPage, onlyUnsynced: $onlyUnsynced)");
+
+    if (_db == null || _converter == null) {
+      debugPrint("[InventoryRepository.getLocalMovements] ❌ ERROR: ObjectBox not initialized");
+      return [];
+    }
+
+    try {
+      final box = _db!.store.box<InventoryMovementCompact>();
+
+      // Construir query
+      Query<InventoryMovementCompact> query;
+
+      // Filtrar solo no sincronizados si se solicita
+      if (onlyUnsynced) {
+        query = box.query(InventoryMovementCompact_.isSynced.equals(false))
+            .order(InventoryMovementCompact_.date, flags: Order.descending)
+            .build();
+      } else {
+        query = box.query()
+            .order(InventoryMovementCompact_.date, flags: Order.descending)
+            .build();
+      }
+
+      // Paginación
+      final offset = (page - 1) * perPage;
+      query.offset = offset;
+      query.limit = perPage;
+
+      final compactMovements = query.find();
+      query.close();
+
+      // Convertir a InventoryMovement completo
+      final movements = compactMovements
+          .map((compact) => _converter!.compactToMovement(compact))
+          .toList();
+
+      debugPrint("[InventoryRepository] ✅ Found ${movements.length} local movements");
+
+      return movements;
+    } catch (e) {
+      debugPrint("[InventoryRepository.getLocalMovements] ❌ Error: $e");
+      return [];
+    }
+  }
+
+  /// ✅ LOCAL-FIRST: Obtener conteo de movimientos pendientes de sincronización
+  /// Útil para mostrar badges o indicadores en UI
+  Future<int> getUnsyncedMovementsCount() async {
+    if (_db == null) {
+      debugPrint("[InventoryRepository.getUnsyncedMovementsCount] ❌ ObjectBox not initialized");
+      return 0;
+    }
+
+    try {
+      final box = _db!.store.box<InventoryMovementCompact>();
+      final query = box.query(InventoryMovementCompact_.isSynced.equals(false)).build();
+      final count = query.count();
+      query.close();
+
+      debugPrint("[InventoryRepository] 📊 Unsynced movements count: $count");
+      return count;
+    } catch (e) {
+      debugPrint("[InventoryRepository.getUnsyncedMovementsCount] ❌ Error: $e");
+      return 0;
+    }
+  }
+
+  /// ✅ LOCAL-FIRST: SOLO sincronizar historial cuando sea necesario (manual o forzado)
+  /// Este método NO se llama automáticamente, solo cuando el usuario lo solicita
+  Future<void> syncHistoryFromWooCommerce({bool forceUpdate = false}) async {
+    if (!forceUpdate) {
+      debugPrint('[InventoryRepository] ⏭️ Sync not forced, skipping WooCommerce sync');
+      return;
+    }
+
+    debugPrint('[InventoryRepository] 🔄 Syncing history FROM WooCommerce (forced)...');
+
+    if (_db == null || _converter == null) {
+      debugPrint("[InventoryRepository] ❌ ObjectBox not initialized");
+      return;
+    }
+
+    try {
+      // Obtener historial de WooCommerce (esto depende del endpoint disponible)
+      // Por ahora usamos getInventoryMovementsWithSWR que consulta la API
+      final response = await getInventoryMovementsWithSWR(page: 1, perPage: 100);
+
+      if (response['movements'] != null && response['movements'] is List) {
+        final box = _db!.store.box<InventoryMovementCompact>();
+        int imported = 0;
+
+        for (final movementData in response['movements']) {
+          try {
+            // Verificar si ya existe localmente
+            final movementId = movementData['id']?.toString() ?? '';
+            if (movementId.isEmpty) continue;
+
+            final query = box.query(InventoryMovementCompact_.movementId.equals(movementId)).build();
+            final existing = query.findFirst();
+            query.close();
+
+            if (existing == null) {
+              // Crear nuevo movimiento desde WooCommerce
+              final movement = InventoryMovement.fromJson(movementData);
+              // Marcarlo como sincronizado porque viene de WooCommerce
+              final syncedMovement = InventoryMovement(
+                id: movement.id,
+                date: movement.date,
+                type: movement.type,
+                description: movement.description,
+                items: movement.items,
+                isSynced: true, // ✅ Ya viene de WooCommerce
+              );
+
+              final compact = _converter!.movementToCompact(syncedMovement);
+              box.put(compact);
+              imported++;
+            }
+          } catch (e) {
+            debugPrint('[InventoryRepository] ⚠️ Error importing movement: $e');
+          }
+        }
+
+        debugPrint('[InventoryRepository] ✅ Sync from WooCommerce completed: $imported movements imported');
+      }
+    } catch (e) {
+      debugPrint('[InventoryRepository] ❌ Error syncing from WooCommerce: $e');
+      rethrow;
+    }
+  }
+
   void dispose() {
     _movementUpdateController.close();
     debugPrint("[InventoryRepository] Disposed.");

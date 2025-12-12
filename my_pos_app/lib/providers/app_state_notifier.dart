@@ -138,8 +138,39 @@ class AppStateNotifier extends _$AppStateNotifier with WidgetsBindingObserver {
 
       debugPrint("[AppStateNotifier] _init() - Connectivity configured");
 
-      // ✓ PROPUESTA 1 - PASO 6.5: Cache warming si app está online y configurada
-      if (state.isAppConfigured && state.isOnline) {
+      // ✅ PASO 6.5: VERIFICAR CONEXIÓN A LA API
+      await Future.microtask(() async {
+        if (state.isAppConfigured && state.isOnline) {
+          debugPrint("[AppStateNotifier] _init() - Verificando conexión a la API...");
+
+          final bool isApiConnected = await _wooCommerceService!.verifyApiConnection();
+
+          if (isApiConnected) {
+            debugPrint("[AppStateNotifier] _init() - ✅ API conectada correctamente");
+            state = state.copyWith(
+              isApiConnected: true,
+              apiConnectionError: null,
+            );
+          } else {
+            debugPrint("[AppStateNotifier] _init() - ❌ No se pudo conectar a la API");
+            state = state.copyWith(
+              isApiConnected: false,
+              apiConnectionError: "No se pudo conectar a la API de WooCommerce",
+            );
+          }
+        } else {
+          debugPrint("[AppStateNotifier] _init() - Verificación de API omitida (app no configurada o sin conexión)");
+          state = state.copyWith(
+            isApiConnected: false,
+            apiConnectionError: state.isAppConfigured ? "Sin conexión a internet" : "App no configurada",
+          );
+        }
+      });
+
+      debugPrint("[AppStateNotifier] _init() - API verification completed");
+
+      // ✓ PASO 7: Cache warming si app está online y configurada
+      if (state.isAppConfigured && state.isOnline && state.isApiConnected) {
         // NO usar await - ejecutar en background sin bloquear
         debugPrint("[AppStateNotifier] _init() - Triggering cache warming...");
         _cacheWarmingService!.warmCache(strategy: CacheWarmingStrategy.moderate).then((_) {
@@ -149,8 +180,8 @@ class AppStateNotifier extends _$AppStateNotifier with WidgetsBindingObserver {
         });
       }
 
-      // ✓ PASO 7: Trigger sync si es necesario (ASYNC, no esperar)
-      if (state.isAppConfigured && state.isOnline) {
+      // ✓ PASO 8: Trigger sync si es necesario (ASYNC, no esperar)
+      if (state.isAppConfigured && state.isOnline && state.isApiConnected) {
         // NO usar await - dejar que se ejecute en background
         _syncManager!.triggerSync();
       }
