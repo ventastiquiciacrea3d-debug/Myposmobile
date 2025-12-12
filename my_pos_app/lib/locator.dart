@@ -31,6 +31,7 @@ import 'services/transaction_service.dart';
 import 'services/woocommerce_service.dart';
 import 'services/data_migration_service.dart';
 import 'services/product_sync_service.dart'; // ✅ Servicio para descargar todos los productos
+import 'services/local_search_service.dart'; // ✅ V3: Búsqueda SOLO LOCAL
 
 // ✅ OPTIMIZACIÓN EXTREMA: Nuevos servicios de batería y almacenamiento
 import 'services/event_driven_polling_service.dart';
@@ -94,6 +95,11 @@ Future<void> setupLocator() async {
     await getIt.isReady<StorageService>();
     return await DatabaseService.getInstance();
   }, dependsOn: [StorageService]);
+
+  // ✅ V3: Local Search Service - Búsqueda SOLO LOCAL (productos/variaciones)
+  getIt.registerLazySingleton<LocalSearchService>(() => LocalSearchService(
+    storageService: getIt<StorageService>(),
+  ));
 
   // Make other services depend on StorageService to ensure correct order
   getIt.registerLazySingleton<ConnectivityService>(() => ConnectivityService());

@@ -78,39 +78,28 @@ class ProductRepository {
     return await getProductById(variationId, forceApi: forceApi);
   }
 
+  /// ✅ SOLO LOCAL: Buscar producto por código de barras o SKU
+  ///
+  /// Según especificación V3: Productos 🔵 SOLO LOCAL - ObjectBox, NUNCA API
+  ///
+  /// NO hace fallback a API. Si no encuentra el producto, retorna null.
+  /// El usuario debe sincronizar el catálogo manualmente.
   Future<Product?> searchProductByBarcodeOrSku(String code, {Duration ttlDuration = barcodeSkuProductCacheTTL, bool searchOnlyAvailable = true}) async {
     if (code.trim().isEmpty) return null;
     final String trimmedId = code.trim();
 
-    Product? cachedProduct = _storageService.getCachedProductByBarcode(trimmedId) ?? _storageService.getProductBySku(trimmedId);
+    // ✅ Buscar SOLO en ObjectBox (local)
+    final Product? cachedProduct = _storageService.getCachedProductByBarcode(trimmedId)
+        ?? _storageService.getProductBySku(trimmedId);
+
     if (cachedProduct != null) {
-      final cacheTimestamp = _storageService.getProductCacheTimestamp(cachedProduct.id);
-      if (cacheTimestamp != null && DateTime.now().isBefore(cacheTimestamp.add(ttlDuration))) {
-        debugPrint("... [Cache HIT] Returning cached product from barcode/SKU search. Delta Sync will update when needed.");
-        return cachedProduct;
-      }
+      debugPrint("[ProductRepository] ✅ Barcode/SKU '$trimmedId' → ${cachedProduct.name} (LOCAL)");
+      return cachedProduct;
     }
 
-    try {
-      final String? apiProductResponse = await _wooCommerceService.searchProductByBarcodeOrSku(trimmedId, useCompute: true, searchOnlyAvailable: searchOnlyAvailable);
-      if (apiProductResponse != null) {
-        final Product apiProduct = await compute(parseProductJsonInBackground, apiProductResponse);
-        await _storageService.cacheProduct(apiProduct, fullAttributesWithOptions: apiProduct.fullAttributesWithOptions);
-        if (!_productUpdateController.isClosed) { _productUpdateController.add(apiProduct); }
-        return apiProduct;
-      }
-      if (cachedProduct != null) return cachedProduct;
-      return null;
-    } on ProductNotFoundException {
-      if (cachedProduct != null) return cachedProduct;
-      return null;
-    } on NetworkException {
-      if (cachedProduct != null) return cachedProduct;
-      rethrow;
-    } on ApiException {
-      if (cachedProduct != null) return cachedProduct;
-      rethrow;
-    }
+    // ✅ NO hacer fallback a API - retornar null
+    debugPrint("[ProductRepository] ⚠️ Barcode/SKU '$trimmedId' no encontrado en local");
+    return null;
   }
 
   Future<Map<String, dynamic>> searchProductsByTerm(String term, { Function(List<Product> cachedResults)? onCachedResults, bool forceApi = false, bool localOnly = false, int limit = 20, int page = 1, bool searchOnlyAvailable = true }) async {
