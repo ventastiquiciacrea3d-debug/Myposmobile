@@ -25,7 +25,7 @@ final orderSummaryProvider = AutoDisposeProvider<OrderSummary>.internal(
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
 typedef OrderSummaryRef = AutoDisposeProviderRef<OrderSummary>;
-String _$currentOrderHash() => r'6aa111c67bbccd4d186b785812434d8914e9aa56';
+String _$currentOrderHash() => r'ae00a82f414e82e132b0266e7465aa2ea2980993';
 
 /// ✓ FASE 1 RIVERPOD: Notifier para la orden actual
 /// Reemplaza OrderProvider (parte de orden actual)
