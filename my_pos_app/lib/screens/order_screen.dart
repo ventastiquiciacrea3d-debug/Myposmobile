@@ -256,6 +256,18 @@ class _OrderScreenState extends ConsumerState<OrderScreen> with TickerProviderSt
     if (_tabController.indexIsChanging ||
         (!_tabController.indexIsChanging && _tabController.index != _tabController.previousIndex)) {
       if (mounted) {
+        // ✅ FIX: Cargar historial si está vacío al entrar a la pestaña
+        if (_tabController.index == 1) {
+          final historyState = ref.read(orderHistoryProvider);
+          if (historyState.orders.isEmpty && !historyState.isLoading) {
+            ref.read(orderHistoryProvider.notifier).getOrderHistory(
+                searchTerm: _searchHistoryController.text.trim(),
+                status: _selectedStatusFilter,
+                refresh: true
+            );
+          }
+        }
+
         final swipedId = _swipedOrderIdHistory;
         if (swipedId != null && _slidableControllers.containsKey(swipedId)) {
           _slidableControllers[swipedId]?.close();
@@ -764,16 +776,16 @@ class _OrderScreenState extends ConsumerState<OrderScreen> with TickerProviderSt
             final appState = ref.watch(appStateNotifierProvider);
             if (!appState.isOnline) {
               return Container(
-                color: Colors.orange.shade800,
-                padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 16),
-                child: const Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.wifi_off_rounded, color: Colors.white, size: 14),
-                    SizedBox(width: 6),
-                    Text('Modo sin conexión', style: TextStyle(color: Colors.white, fontSize: 11.5, fontWeight: FontWeight.w500))
-                  ]
-                )
+                  color: Colors.orange.shade800,
+                  padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 16),
+                  child: const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.wifi_off_rounded, color: Colors.white, size: 14),
+                        SizedBox(width: 6),
+                        Text('Modo sin conexión', style: TextStyle(color: Colors.white, fontSize: 11.5, fontWeight: FontWeight.w500))
+                      ]
+                  )
               );
             }
             return const SizedBox.shrink();
@@ -850,110 +862,110 @@ class _OrderScreenState extends ConsumerState<OrderScreen> with TickerProviderSt
                                     );
                                   }
                                 },
-                            borderRadius: BorderRadius.circular(8),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
-                              child: Row(
-                                children: [
-                                  const Icon(Icons.person_outline, size: 20),
-                                  const SizedBox(width: 6),
-                                  Text(
-                                    order.customerName ?? 'Cliente General',
-                                    style: const TextStyle(fontWeight: FontWeight.w500),
-                                  ),
-                                  const Icon(Icons.arrow_drop_down, size: 20),
-                                ],
-                              ),
-                            ),
-                          )
-                        ],
-                      ),
-                    ),
-                  ),
-                  if (order.items.isEmpty)
-                    const SliverFillRemaining(
-                      child: Center(
-                        child: Text("Añade productos desde el escáner"),
-                      ),
-                    )
-                  else
-                    SliverList(
-                      delegate: SliverChildBuilderDelegate(
-                            (context, index) {
-                          final item = order.items[index];
-                          final uniqueItemId = _getUniqueCartItemId(item.productId, item.variationId);
-
-                          // ✅ FASE 3: Dismissible para eliminar deslizando
-                          return Dismissible(
-                            key: ValueKey(uniqueItemId),
-                            direction: DismissDirection.endToStart,
-                            background: Container(
-                              color: Colors.red,
-                              alignment: Alignment.centerRight,
-                              padding: const EdgeInsets.only(right: 20),
-                              child: const Icon(
-                                Icons.delete,
-                                color: Colors.white,
-                                size: 32,
-                              ),
-                            ),
-                            confirmDismiss: (direction) async {
-                              return await showDialog<bool>(
-                                context: context,
-                                builder: (dialogContext) => AlertDialog(
-                                  title: const Text('Eliminar Producto'),
-                                  content: Text(
-                                    '¿Eliminar "${item.name}" del pedido?',
-                                  ),
-                                  actions: [
-                                    TextButton(
-                                      onPressed: () => Navigator.pop(dialogContext, false),
-                                      child: const Text('CANCELAR'),
-                                    ),
-                                    ElevatedButton(
-                                      onPressed: () => Navigator.pop(dialogContext, true),
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: Colors.red,
+                                borderRadius: BorderRadius.circular(8),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+                                  child: Row(
+                                    children: [
+                                      const Icon(Icons.person_outline, size: 20),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        order.customerName ?? 'Cliente General',
+                                        style: const TextStyle(fontWeight: FontWeight.w500),
                                       ),
-                                      child: const Text('ELIMINAR'),
-                                    ),
-                                  ],
+                                      const Icon(Icons.arrow_drop_down, size: 20),
+                                    ],
+                                  ),
                                 ),
-                              );
-                            },
-                            onDismissed: (direction) {
-                              _deleteOrderItem(item);
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text('${item.name} eliminado'),
-                                  duration: const Duration(seconds: 2),
-                                ),
-                              );
-                            },
-                            child: CurrentOrderItemCard(
-                              item: item,
-                              currencyFormat: currencyFormat,
-                              onDelete: () => _deleteOrderItem(item),
-                              onDuplicate: () => _duplicateOrderItem(item),
-                              isExpanded: _expandedOrderItemIdActual == uniqueItemId,
-                              onToggleExpand: () {
-                                if (mounted) setState(() => _expandedOrderItemIdActual = _expandedOrderItemIdActual == uniqueItemId ? null : uniqueItemId);
-                              },
-                              onShowVariantsModal: (OrderItem item) {
-                                _showVariantsModal(context, item);
-                              },
-                              onShowDiscountModal: (OrderItem item) {
-                                _showDiscountModal(context, item);
-                              },
-                            ),
-                          );
-                        },
-                        childCount: order.items.length,
+                              )
+                            ],
+                          ),
+                        ),
                       ),
-                    ),
-                ],
-              ),
-            ),
+                      if (order.items.isEmpty)
+                        const SliverFillRemaining(
+                          child: Center(
+                            child: Text("Añade productos desde el escáner"),
+                          ),
+                        )
+                      else
+                        SliverList(
+                          delegate: SliverChildBuilderDelegate(
+                                (context, index) {
+                              final item = order.items[index];
+                              final uniqueItemId = _getUniqueCartItemId(item.productId, item.variationId);
+
+                              // ✅ FASE 3: Dismissible para eliminar deslizando
+                              return Dismissible(
+                                key: ValueKey(uniqueItemId),
+                                direction: DismissDirection.endToStart,
+                                background: Container(
+                                  color: Colors.red,
+                                  alignment: Alignment.centerRight,
+                                  padding: const EdgeInsets.only(right: 20),
+                                  child: const Icon(
+                                    Icons.delete,
+                                    color: Colors.white,
+                                    size: 32,
+                                  ),
+                                ),
+                                confirmDismiss: (direction) async {
+                                  return await showDialog<bool>(
+                                    context: context,
+                                    builder: (dialogContext) => AlertDialog(
+                                      title: const Text('Eliminar Producto'),
+                                      content: Text(
+                                        '¿Eliminar "${item.name}" del pedido?',
+                                      ),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () => Navigator.pop(dialogContext, false),
+                                          child: const Text('CANCELAR'),
+                                        ),
+                                        ElevatedButton(
+                                          onPressed: () => Navigator.pop(dialogContext, true),
+                                          style: ElevatedButton.styleFrom(
+                                            backgroundColor: Colors.red,
+                                          ),
+                                          child: const Text('ELIMINAR'),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                },
+                                onDismissed: (direction) {
+                                  _deleteOrderItem(item);
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text('${item.name} eliminado'),
+                                      duration: const Duration(seconds: 2),
+                                    ),
+                                  );
+                                },
+                                child: CurrentOrderItemCard(
+                                  item: item,
+                                  currencyFormat: currencyFormat,
+                                  onDelete: () => _deleteOrderItem(item),
+                                  onDuplicate: () => _duplicateOrderItem(item),
+                                  isExpanded: _expandedOrderItemIdActual == uniqueItemId,
+                                  onToggleExpand: () {
+                                    if (mounted) setState(() => _expandedOrderItemIdActual = _expandedOrderItemIdActual == uniqueItemId ? null : uniqueItemId);
+                                  },
+                                  onShowVariantsModal: (OrderItem item) {
+                                    _showVariantsModal(context, item);
+                                  },
+                                  onShowDiscountModal: (OrderItem item) {
+                                    _showDiscountModal(context, item);
+                                  },
+                                ),
+                              );
+                            },
+                            childCount: order.items.length,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
                 if (order.items.isNotEmpty) _buildBottomActionBar(context, order, state.taxRate), // ✅ FASE 3: Pasar order y taxRate
               ],
             );
@@ -1155,41 +1167,41 @@ class _OrderScreenState extends ConsumerState<OrderScreen> with TickerProviderSt
                     }
 
                     final order = state.orders[index];
-                final orderKey = order.id ?? 'local_${order.hashCode}';
-                _slidableControllers.putIfAbsent(orderKey, () => SlidableController(this));
+                    final orderKey = order.id ?? 'local_${order.hashCode}';
+                    _slidableControllers.putIfAbsent(orderKey, () => SlidableController(this));
 
-                return HistoryOrderItemCard(
-                  key: ValueKey('history_order_card_$orderKey'),
-                  order: order,
-                  currencyFormat: currencyFormat,
-                  dateTimeFormat: dateTimeFormat,
-                  slidableController: _slidableControllers[orderKey],
-                  onEdit: () { _loadOrderForEditing(context, order); _slidableControllers[orderKey]?.close(); },
-                  onPdf: () { _handlePdfAction(context, order); _slidableControllers[orderKey]?.close(); },
-                  onMore: () { _handleMoreOptionsForHistoryItem(context, order); },
-                  onChangeStatusAction: () { _showChangeStatusDialogForOrder(context, order, isFromHistoryScreen: true); },
-                  isExpanded: _expandedOrderIdHistory == orderKey,
-                  onExpansionChanged: (isExpanding) {
-                    if (mounted) {
-                      setState(() {
-                        _expandedOrderIdHistory = isExpanding ? orderKey : null;
-                        if (!isExpanding && _slidableControllers.containsKey(orderKey)) {
-                          _slidableControllers[orderKey]?.close();
+                    return HistoryOrderItemCard(
+                      key: ValueKey('history_order_card_$orderKey'),
+                      order: order,
+                      currencyFormat: currencyFormat,
+                      dateTimeFormat: dateTimeFormat,
+                      slidableController: _slidableControllers[orderKey],
+                      onEdit: () { _loadOrderForEditing(context, order); _slidableControllers[orderKey]?.close(); },
+                      onPdf: () { _handlePdfAction(context, order); _slidableControllers[orderKey]?.close(); },
+                      onMore: () { _handleMoreOptionsForHistoryItem(context, order); },
+                      onChangeStatusAction: () { _showChangeStatusDialogForOrder(context, order, isFromHistoryScreen: true); },
+                      isExpanded: _expandedOrderIdHistory == orderKey,
+                      onExpansionChanged: (isExpanding) {
+                        if (mounted) {
+                          setState(() {
+                            _expandedOrderIdHistory = isExpanding ? orderKey : null;
+                            if (!isExpanding && _slidableControllers.containsKey(orderKey)) {
+                              _slidableControllers[orderKey]?.close();
+                            }
+                          });
                         }
-                      });
-                    }
+                      },
+                      statusTextBuilder: _getStatusText,
+                      statusColorBuilder: _getStatusColor,
+                      statusIconBuilder: _getIconForStatusValue,
+                    );
                   },
-                    statusTextBuilder: _getStatusText,
-                    statusColorBuilder: _getStatusColor,
-                    statusIconBuilder: _getIconForStatusValue,
-                  );
-                },
-              ),
-            );
-          },
+                ),
+              );
+            },
+          ),
         ),
-      ),
-    ],
+      ],
     );
   }
 

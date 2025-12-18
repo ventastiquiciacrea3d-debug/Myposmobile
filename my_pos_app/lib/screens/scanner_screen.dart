@@ -34,7 +34,10 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
   bool _hideImagesInSearch = false;
   String _currentSearchQueryForDebounce = '';
   int _currentBottomNavIndex = 0;
-  bool _isCameraPausedManually = false; // ✅ MEJORA: Estado de pausa manual
+  bool _isCameraPausedManually = false;
+
+  // Bandera para evitar múltiples diálogos
+  bool _isShowingProductDialog = false;
 
   StreamSubscription? _rapidScanSubscription;
   StreamSubscription? _notificationSubscription;
@@ -57,7 +60,6 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
       _setupRapidScanListeners(scannerNotifier);
       _loadSettingsAndInitScanner(appStateValue.isAppConfigured);
 
-      // ✓ NUEVO: Inicializar background service AQUÍ, después del splash
       MyPosApp.initializeBackgroundServicePostSplash();
     });
   }
@@ -77,20 +79,17 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
     final scannerNotifier = ref.read(scannerProvider.notifier);
 
     if (_barcodeFocusNode.hasFocus && scannerState.isCameraActive) {
-      // User is typing - stop scanner
       scannerNotifier.resetScanner(keepSearchResults: true);
     } else if (!_barcodeFocusNode.hasFocus &&
-               !scannerState.isCameraActive &&
-               _barcodeController.text.isEmpty &&
-               !scannerState.isProcessingBarcode) {
-      // Only restart if not currently processing a barcode
+        !scannerState.isCameraActive &&
+        _barcodeController.text.isEmpty &&
+        !scannerState.isProcessingBarcode) {
       debugPrint("[ScannerScreen] Focus lost - restarting scanner");
       scannerNotifier.startScanner();
     }
     setState(() {});
   }
 
-  // ✅ MEJORA: Método para pausar/reanudar cámara manualmente
   void _toggleCameraPause() {
     if (!mounted) return;
 
@@ -133,20 +132,16 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
   void _showProductBottomSheet(Product product) {
     if (!mounted) return;
 
-    // ✅ MEJORA: Pausar cámara mientras se muestra el diálogo (ahorro de batería)
-    final scannerNotifier = ref.read(scannerProvider.notifier);
-    final scannerController = scannerNotifier.scannerService.controller;
-
-    debugPrint("[ScannerScreen] 📱 Showing product bottom sheet - PAUSING camera");
-
-    // Pausar la cámara antes de mostrar el diálogo
-    if (scannerController != null) {
-      try {
-        scannerController.stop();
-      } catch (e) {
-        debugPrint("[ScannerScreen] ⚠️ Error pausing camera: $e");
-      }
+    // Evitar aperturas múltiples
+    if (_isShowingProductDialog) {
+      return;
     }
+    _isShowingProductDialog = true;
+
+    // 🔥 CORRECCIÓN CRÍTICA: NO PAUSAR LA CÁMARA
+    // Eliminamos scannerController.stop(). Esto mantiene la cámara viva
+    // detrás del modal, evitando el error "BufferQueue abandoned" y permitiendo
+    // un escaneo rápido inmediato al cerrar.
 
     showModalBottomSheet(
       context: context,
@@ -154,24 +149,19 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
       backgroundColor: Colors.transparent,
       builder: (context) => AddToCartDialog(productId: product.id),
     ).whenComplete(() {
-      debugPrint("[ScannerScreen] Bottom sheet closed - RESUMING scanner");
+      debugPrint("[ScannerScreen] Bottom sheet closed - Clearing found state");
+      _isShowingProductDialog = false;
 
-      // ✅ MEJORA: Reanudar la cámara después de un delay para evitar pantalla en blanco
       if (mounted && !_isCameraPausedManually) {
-        Future.delayed(const Duration(milliseconds: 300), () {
-          if (mounted && scannerController != null && !_isCameraPausedManually) {
-            try {
-              scannerController.start();
-              debugPrint("[ScannerScreen] ✅ Camera resumed successfully");
-            } catch (e) {
-              debugPrint("[ScannerScreen] ⚠️ Error resuming camera: $e");
-              // Si falla, hacer reset completo
-              scannerNotifier.resetScanner().then((_) {
-                if (mounted && !_isCameraPausedManually) {
-                  scannerNotifier.startScanner();
-                }
-              });
-            }
+        // Al cerrar, solo reseteamos el estado lógico (para salir de 'productFound')
+        // pero NO reiniciamos el hardware si ya está corriendo.
+        final scannerNotifier = ref.read(scannerProvider.notifier);
+
+        // resetScanner limpia el estado 'productFound'
+        scannerNotifier.resetScanner().then((_) {
+          // Aseguramos que la cámara esté activa para el siguiente escaneo
+          if (mounted && !_isCameraPausedManually) {
+            scannerNotifier.startScanner();
           }
         });
       }
@@ -193,7 +183,8 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
               !_barcodeFocusNode.hasFocus &&
               appStateValue.isAppConfigured &&
               !scannerState.isCameraActive &&
-              !scannerState.isProcessingBarcode) {
+              !scannerState.isProcessingBarcode &&
+              !_isShowingProductDialog) {
             debugPrint("[ScannerScreen] App resumed - restarting scanner");
             ref.read(scannerProvider.notifier).startScanner();
           }
@@ -201,7 +192,11 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
         case AppLifecycleState.inactive:
         case AppLifecycleState.paused:
         case AppLifecycleState.hidden:
-          if (scannerState.isCameraActive) ref.read(scannerProvider.notifier).resetScanner();
+        // Solo reseteamos si no estamos mostrando el diálogo de producto
+        // para evitar cerrar la cámara si el usuario solo cambió de foco momentáneamente
+          if (scannerState.isCameraActive && !_isShowingProductDialog) {
+            ref.read(scannerProvider.notifier).resetScanner();
+          }
           break;
         case AppLifecycleState.detached:
           break;
@@ -371,41 +366,36 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
     final shouldShowSearchResultsView = _barcodeFocusNode.hasFocus && hasSearchQuery;
     final showBackButtonInAppBar = shouldShowSearchResultsView;
 
-    // ⚡ NUEVO: Listener para mostrar producto cuando se escanea (debe estar en build())
     ref.listen<ScannerState>(
       scannerProvider,
-      (previous, next) {
-        // Solo reaccionar cuando el estado cambia a productFound
+          (previous, next) {
         if (next.viewState == ScannerViewState.productFound &&
             next.scannedProduct != null &&
             previous?.viewState != ScannerViewState.productFound) {
 
           debugPrint("[ScannerScreen] 🎯 Product found from scan: ${next.scannedProduct!.name}");
 
-          // Mostrar el producto en bottom sheet
           if (mounted) {
             _showProductBottomSheet(next.scannedProduct!);
           }
         }
 
-        // También manejar el caso de error - resetear automáticamente después de 3 segundos
         if (next.viewState == ScannerViewState.error &&
             previous?.viewState != ScannerViewState.error) {
           debugPrint("[ScannerScreen] ⚠️ Scanner error detected, will auto-reset");
           Future.delayed(const Duration(seconds: 3), () {
-            if (mounted) {
+            if (mounted && !_isShowingProductDialog) {
               ref.read(scannerProvider.notifier).resetScanner();
               ref.read(scannerProvider.notifier).startScanner();
             }
           });
         }
 
-        // Y manejar el caso de "no product" - resetear automáticamente después de 2 segundos
         if (next.viewState == ScannerViewState.noProduct &&
             previous?.viewState != ScannerViewState.noProduct) {
           debugPrint("[ScannerScreen] 📭 No product found, will auto-resume");
           Future.delayed(const Duration(seconds: 2), () {
-            if (mounted) {
+            if (mounted && !_isShowingProductDialog) {
               ref.read(scannerProvider.notifier).resetScanner();
               ref.read(scannerProvider.notifier).startScanner();
             }
@@ -583,14 +573,14 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
 
   Widget _buildOfflineIndicator() {
     return Consumer(
-      builder: (context, ref, _) {
-        final appStateValue = ref.watch(appStateNotifierProvider);
-        if (appStateValue.connectionStatus == ConnectionStatus.offline) {
-          return Container( color: Colors.orange.shade800, padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 16), child: const Row( mainAxisAlignment: MainAxisAlignment.center, children: [ Icon( Icons.wifi_off, color: Colors.white, size: 14,), SizedBox(width: 8), Text( 'Modo sin conexión', style: TextStyle( color: Colors.white, fontSize: 12,),), ], ), );
-        } else {
-          return const SizedBox.shrink();
+        builder: (context, ref, _) {
+          final appStateValue = ref.watch(appStateNotifierProvider);
+          if (appStateValue.connectionStatus == ConnectionStatus.offline) {
+            return Container( color: Colors.orange.shade800, padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 16), child: const Row( mainAxisAlignment: MainAxisAlignment.center, children: [ Icon( Icons.wifi_off, color: Colors.white, size: 14,), SizedBox(width: 8), Text( 'Modo sin conexión', style: TextStyle( color: Colors.white, fontSize: 12,),), ], ), );
+          } else {
+            return const SizedBox.shrink();
+          }
         }
-      }
     );
   }
 
@@ -598,14 +588,49 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
     if (!mounted) return const SizedBox.shrink();
     if (_barcodeFocusNode.hasFocus) { return Center( child: Padding( padding: const EdgeInsets.all(32.0), child: Column( mainAxisAlignment: MainAxisAlignment.center, children: [ Icon(Icons.search, size: 80, color: Colors.grey.shade300), const SizedBox(height: 16), Text( 'Escriba para buscar productos por nombre o SKU.', textAlign: TextAlign.center, style: TextStyle(fontSize: 16, color: Colors.grey.shade600), ), ], ), ), ); }
     if (!appStateValue.isAppConfigured) { return Center( child: Padding( padding: const EdgeInsets.all(32.0), child: Column( mainAxisAlignment: MainAxisAlignment.center, children: [ Icon(Icons.settings_applications_outlined, size: 80, color: Colors.grey.shade400), const SizedBox(height: 24), const Text( 'Configuración Requerida', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500), textAlign: TextAlign.center,), const SizedBox(height: 12), Text( 'Usa el botón "+" y luego "Ajustes" para configurar la conexión con tu tienda WooCommerce.', style: TextStyle(fontSize: 14, color: Colors.grey.shade700), textAlign: TextAlign.center, ), ], ), ), ); }
-    switch (scannerState.viewState) {
-      case ScannerViewState.initial: return const _LoadingView(message: "Inicializando escáner...");
-      case ScannerViewState.scanning: return _ScannerView( scannerState: scannerState, onDetect: ref.read(scannerProvider.notifier).handleBarcodeDetection, onError: ref.read(scannerProvider.notifier).onScannerError, onManualCapture: ref.read(scannerProvider.notifier).triggerManualCapture, onTogglePause: _toggleCameraPause, isPausedManually: _isCameraPausedManually, );
-      case ScannerViewState.processing: return const _LoadingView(message: "Procesando código...");
-      case ScannerViewState.productFound: return const _LoadingView(message: "Producto encontrado...");
-      case ScannerViewState.noProduct: case ScannerViewState.error: return _ScannerErrorView( isNoProduct: scannerState.viewState == ScannerViewState.noProduct, errorMessage: scannerState.errorMessage ?? "Error del escáner.", onRetry: () => _clearSearchAndResetScanner() );
-      case ScannerViewState.awaitingActivation: default: return _ScannerActivationView(onActivateScan: ref.read(scannerProvider.notifier).activateManualScan, onManualEntry: () => _showManualBarcodeDialog(context));
-    }
+
+    // 🔥 FIX: Mantener el widget de la cámara SIEMPRE visible en el stack
+    // si el estado es scanning, processing O productFound.
+    // Esto evita que se destruya la superficie de la cámara cuando se encuentra un producto.
+    return Stack(
+      children: [
+        // 1. Capa de Cámara (Fondo) - Se mantiene viva durante productFound
+        if (scannerState.viewState == ScannerViewState.scanning ||
+            scannerState.viewState == ScannerViewState.processing ||
+            scannerState.viewState == ScannerViewState.productFound)
+          _ScannerView(
+            scannerState: scannerState,
+            onDetect: ref.read(scannerProvider.notifier).handleBarcodeDetection,
+            onError: ref.read(scannerProvider.notifier).onScannerError,
+            onManualCapture: ref.read(scannerProvider.notifier).triggerManualCapture,
+            onTogglePause: _toggleCameraPause,
+            isPausedManually: _isCameraPausedManually,
+          ),
+
+        // 2. Capas de Estado (superpuestas)
+        if (scannerState.viewState == ScannerViewState.initial)
+          const _LoadingView(message: "Inicializando escáner..."),
+
+        if (scannerState.viewState == ScannerViewState.processing)
+          const _LoadingView(message: "Procesando código..."),
+
+        // Nota: Ya no mostramos _LoadingView para productFound porque tapa la cámara
+        // y el BottomSheet ya indica que se encontró algo.
+
+        if (scannerState.viewState == ScannerViewState.noProduct || scannerState.viewState == ScannerViewState.error)
+          _ScannerErrorView(
+              isNoProduct: scannerState.viewState == ScannerViewState.noProduct,
+              errorMessage: scannerState.errorMessage ?? "Error del escáner.",
+              onRetry: () => _clearSearchAndResetScanner()
+          ),
+
+        if (scannerState.viewState == ScannerViewState.awaitingActivation)
+          _ScannerActivationView(
+              onActivateScan: ref.read(scannerProvider.notifier).activateManualScan,
+              onManualEntry: () => _showManualBarcodeDialog(context)
+          ),
+      ],
+    );
   }
 
   Widget _buildBottomNavItem({ required BuildContext context, required IconData icon, required String label, required int itemIndex, required Function(int) onTap}) {

@@ -26,7 +26,9 @@
       "Bash(timeout 2 cat:*)",
       "Bash(flutter pub run build_runner build:*)",
       "Bash(flutter analyze:*)",
-      "Bash(if exist nul del /F /Q nul)"
+      "Bash(if exist nul del /F /Q nul)",
+      "Bash(git rm:*)",
+      "Bash(flutter devices)"
     ],
     "deny": [],
     "ask": []

@@ -8,6 +8,7 @@ import 'package:collection/collection.dart';
 
 import '../services/sync_manager.dart';
 import '../services/database_service.dart';
+import '../services/woocommerce_service.dart';
 import '../models/sync_operation.dart';
 import '../models/product.dart' as app_product;
 import '../models/order.dart';
@@ -18,12 +19,11 @@ import '../config/constants.dart';
 import 'order_state.dart';
 import 'shared_providers.dart';
 import 'dart:math' show max;
-import '../objectbox.g.dart' hide Order; // ✓ PRIORIDAD 1: Para query helpers (ProductOptimized_), ocultar Order de ObjectBox
+import '../objectbox.g.dart' hide Order;
 
 part 'order_notifier.g.dart';
 
-/// ✓ FASE 1 RIVERPOD: Notifier para la orden actual
-/// Reemplaza OrderProvider (parte de orden actual)
+/// Notifier para la orden actual
 @riverpod
 class CurrentOrder extends _$CurrentOrder {
   late OrderRepository _orderRepository;
@@ -31,6 +31,7 @@ class CurrentOrder extends _$CurrentOrder {
   late SyncManager _syncManager;
   late SharedPreferences _sharedPreferences;
   late DatabaseService _databaseService;
+  late WooCommerceService _wooCommerceService;
 
   Timer? _errorTimer;
   Timer? _saveOrderDebounce;
@@ -39,14 +40,14 @@ class CurrentOrder extends _$CurrentOrder {
   Future<CurrentOrderState> build() async {
     debugPrint("[CurrentOrder] build() called - Initializing");
 
-    // Obtener dependencias
     _orderRepository = ref.read(orderRepositoryProvider);
     _productRepository = ref.read(productRepositoryProvider);
     _syncManager = ref.read(syncManagerProvider);
     _sharedPreferences = ref.read(sharedPreferencesProvider);
     _databaseService = ref.read(databaseServiceProvider);
+    _wooCommerceService = ref.read(wooCommerceServiceProvider);
 
-    // ✓ Cleanup cuando el provider se dispone
+    // Cleanup cuando el provider se dispone
     ref.onDispose(() {
       debugPrint("[CurrentOrder] Disposing");
       _errorTimer?.cancel();
@@ -129,7 +130,7 @@ class CurrentOrder extends _$CurrentOrder {
         : productId;
   }
 
-  /// ✓ OPTIMIZADO: Recalcular totales de la orden
+  /// Recalcular totales de la orden
   Order _recalculateOrder(Order order, double taxRate) {
     double subtotalBase = 0;
     double subtotalAfterWcDiscounts = 0;
@@ -154,7 +155,7 @@ class CurrentOrder extends _$CurrentOrder {
     );
   }
 
-  /// ✓ OPTIMIZADO: Guardar orden en Hive con debounce
+  /// Guardar orden en Hive con debounce
   Future<void> _saveOrderWithDebounce(Order order, {bool force = false}) async {
     _saveOrderDebounce?.cancel();
 
@@ -177,29 +178,18 @@ class CurrentOrder extends _$CurrentOrder {
             orderToSave.customerName != 'Cliente General' ||
             orderToSave.id != hiveCurrentOrderPendingKey) {
 
-          // ═══════════════════════════════════════════════════════════════
-          // PASO 1: Guardar en LOCAL (Hive/ObjectBox)
-          // ═══════════════════════════════════════════════════════════════
           await _orderRepository.savePendingOrder(orderToSave, keyToSave);
           debugPrint("[CurrentOrder] ✅ Order saved to LOCAL with key $keyToSave");
 
-          // ═══════════════════════════════════════════════════════════════
-          // PASO 2: Enviar a WooCommerce como status='pending' (CSV Línea 10)
-          // ═══════════════════════════════════════════════════════════════
-          // Según CSV: "enviar a woocommerce como pedido sin completar para
-          // que guarde por 5 minutos los productos y estos se disminuya del
-          // stock si se cancela volverá la cantidad exacta"
           if (orderToSave.items.isNotEmpty) {
             _sendDraftToWooCommerce(orderToSave);
           }
 
         } else if (keyToSave == hiveCurrentOrderPendingKey &&
-                   orderToSave.items.isEmpty &&
-                   orderToSave.customerName == 'Cliente General') {
+            orderToSave.items.isEmpty &&
+            orderToSave.customerName == 'Cliente General') {
           await _orderRepository.removePendingOrder(hiveCurrentOrderPendingKey);
           debugPrint("[CurrentOrder] Empty current order draft removed from Hive");
-
-          // Si se eliminó el borrador local, también cancelar en WooCommerce
           _cancelDraftInWooCommerce();
         }
       } catch (e) {
@@ -209,7 +199,6 @@ class CurrentOrder extends _$CurrentOrder {
     });
   }
 
-  /// ✓ Establecer error con timer de auto-limpieza
   void _setError(String message, {int durationSeconds = 7}) {
     _errorTimer?.cancel();
 
@@ -230,7 +219,6 @@ class CurrentOrder extends _$CurrentOrder {
     });
   }
 
-  /// Limpiar orden actual
   Future<void> clearOrder() async {
     state = await AsyncValue.guard(() async {
       final currentState = state.requireValue;
@@ -248,7 +236,6 @@ class CurrentOrder extends _$CurrentOrder {
     });
   }
 
-  /// Actualizar cliente de la orden
   Future<void> updateOrderCustomer(String? customerId, String customerName) async {
     state = await AsyncValue.guard(() async {
       final currentState = state.requireValue;
@@ -258,7 +245,7 @@ class CurrentOrder extends _$CurrentOrder {
 
       final effectiveName = customerName.isNotEmpty ? customerName : 'Cliente General';
       final bool customerChanged = currentOrder.customerId != customerId ||
-                                    currentOrder.customerName != effectiveName;
+          currentOrder.customerName != effectiveName;
 
       if (customerChanged) {
         debugPrint("[CurrentOrder] Updating customer to ID: $customerId, Name: $effectiveName");
@@ -278,12 +265,11 @@ class CurrentOrder extends _$CurrentOrder {
     });
   }
 
-  /// ✓ OPTIMIZADO: Agregar producto a la orden
   Future<void> addProduct(
-    app_product.Product productInput,
-    int quantity, {
-    List<Map<String, String>>? explicitAttributes,
-  }) async {
+      app_product.Product productInput,
+      int quantity, {
+        List<Map<String, String>>? explicitAttributes,
+      }) async {
     if (quantity <= 0) {
       _setError("La cantidad debe ser mayor a 0.", durationSeconds: 3);
       return;
@@ -304,7 +290,7 @@ class CurrentOrder extends _$CurrentOrder {
         );
 
         final existingItemIndex = currentOrder.items.indexWhere((item) =>
-          _getUniqueCartItemId(item.productId, item.variationId) == uniqueItemIdInCart);
+        _getUniqueCartItemId(item.productId, item.variationId) == uniqueItemIdInCart);
 
         if (existingItemIndex != -1) {
           currentItemQtyInCart = currentOrder.items[existingItemIndex].quantity;
@@ -358,7 +344,7 @@ class CurrentOrder extends _$CurrentOrder {
       final String uniqueCartLookupId = _getUniqueCartItemId(orderItemProductId, orderItemVariationId);
 
       final index = items.indexWhere((item) =>
-        _getUniqueCartItemId(item.productId, item.variationId) == uniqueCartLookupId);
+      _getUniqueCartItemId(item.productId, item.variationId) == uniqueCartLookupId);
 
       // Preparar atributos
       List<Map<String, String>>? attributesForOrderItem = explicitAttributes;
@@ -372,7 +358,7 @@ class CurrentOrder extends _$CurrentOrder {
         }).toList();
 
         if (attributesForOrderItem.every((attr) =>
-            (attr['name'] ?? '').isEmpty || (attr['option'] ?? '').isEmpty)) {
+        (attr['name'] ?? '').isEmpty || (attr['option'] ?? '').isEmpty)) {
           attributesForOrderItem = null;
         }
       }
@@ -421,7 +407,6 @@ class CurrentOrder extends _$CurrentOrder {
     });
   }
 
-  /// Duplicar item de orden
   Future<void> duplicateOrderItem(String uniqueItemId) async {
     state = await AsyncValue.guard(() async {
       final currentState = state.requireValue;
@@ -432,7 +417,7 @@ class CurrentOrder extends _$CurrentOrder {
       }
 
       final itemToDuplicate = currentOrder.items.firstWhereOrNull((item) =>
-        _getUniqueCartItemId(item.productId, item.variationId) == uniqueItemId);
+      _getUniqueCartItemId(item.productId, item.variationId) == uniqueItemId);
 
       if (itemToDuplicate == null) {
         throw Exception("No se encontró el ítem para duplicar.");
@@ -487,7 +472,6 @@ class CurrentOrder extends _$CurrentOrder {
     });
   }
 
-  /// Actualizar cantidad de un item
   Future<void> updateItemQuantity(String uniqueItemId, int quantity) async {
     if (quantity < 0) return;
 
@@ -501,13 +485,12 @@ class CurrentOrder extends _$CurrentOrder {
 
       final items = List<OrderItem>.from(currentOrder.items);
       final index = items.indexWhere((item) =>
-        _getUniqueCartItemId(item.productId, item.variationId) == uniqueItemId);
+      _getUniqueCartItemId(item.productId, item.variationId) == uniqueItemId);
 
       if (index >= 0) {
         final item = items[index];
 
         if (quantity == 0) {
-          // Remover item
           items.removeAt(index);
           debugPrint("... Item $uniqueItemId removed (qty 0).");
         } else {
@@ -559,13 +542,11 @@ class CurrentOrder extends _$CurrentOrder {
     });
   }
 
-  /// Remover item de la orden
   Future<void> removeItem(String uniqueItemId) async {
     debugPrint("[CurrentOrder.removeItem] Removing item $uniqueItemId");
     await updateItemQuantity(uniqueItemId, 0);
   }
 
-  /// Establecer tasa de impuestos
   Future<void> setTaxRate(double rate) async {
     final clampedRate = rate.clamp(0.0, 1.0);
 
@@ -601,7 +582,6 @@ class CurrentOrder extends _$CurrentOrder {
     });
   }
 
-  /// Aplicar descuento individual a un item
   Future<void> applyItemDiscount({
     required String uniqueItemId,
     required double value,
@@ -623,7 +603,7 @@ class CurrentOrder extends _$CurrentOrder {
 
       final items = List<OrderItem>.from(currentOrder.items);
       final index = items.indexWhere((item) =>
-        _getUniqueCartItemId(item.productId, item.variationId) == uniqueItemId);
+      _getUniqueCartItemId(item.productId, item.variationId) == uniqueItemId);
 
       if (index >= 0) {
         final item = items[index];
@@ -664,8 +644,9 @@ class CurrentOrder extends _$CurrentOrder {
     });
   }
 
-  /// 🔴 PRIORIDAD 1: Actualizar stock local inmediatamente al crear pedido
-  /// CRÍTICO: Previene sobreventa al reducir stock local ANTES de sincronizar
+  /// 🔴 ACTUALIZACIÓN INMEDIATA DE STOCK LOCAL
+  /// Este método es CRÍTICO para que la UI refleje el cambio de stock
+  /// instantáneamente, incluso si la sincronización falla o tarda.
   Future<void> _updateLocalStockImmediately(Order order) async {
     debugPrint("[CurrentOrder.updateLocalStock] 📦 Updating local stock for ${order.items.length} items");
 
@@ -711,7 +692,6 @@ class CurrentOrder extends _$CurrentOrder {
     } catch (e, stackTrace) {
       debugPrint("[CurrentOrder.updateLocalStock] ❌ ERROR updating local stock: $e\n$stackTrace");
       // No rethrow - continuar con el pedido aunque falle la actualización de stock local
-      // El stock se corregirá en el próximo polling/sync
     }
   }
 
@@ -743,21 +723,20 @@ class CurrentOrder extends _$CurrentOrder {
       date: DateTime.now(),
     );
 
-    // 🔴 PRIORIDAD 1: Actualizar stock local ANTES de encolar
-    // CRÍTICO: Previene sobreventa al reducir stock inmediatamente
+    // 🔴 PASO 1: Actualizar stock local ANTES de encolar
     await _updateLocalStockImmediately(orderForQueue);
 
     await _orderRepository.savePendingOrder(orderForQueue, localId);
 
-    // ✓ PROPUESTA 2: Usar prioridad crítica e idempotency key basado en localId
+    // 🔴 PASO 2: Encolar sincronización (aquí es donde fallaba Hive si había conflictos)
     _syncManager.addOperation(
       SyncOperationType.createOrder,
       {
         'order': orderForQueue.toJson(),
         'localId': localId,
       },
-      priority: SyncPriority.critical, // Ventas son críticas
-      idempotencyKey: 'createOrder_$localId', // Idempotency key explícito
+      priority: SyncPriority.critical,
+      idempotencyKey: 'createOrder_$localId',
     );
 
     await clearOrder();
@@ -800,7 +779,7 @@ class CurrentOrder extends _$CurrentOrder {
       }
 
       debugPrint("[CurrentOrder] Enqueuing status update for API Order ID: $orderIdToUpdate to '$newStatus'");
-      // ✓ PROPUESTA 2: Prioridad normal (por defecto) e idempotency key auto-generado
+
       _syncManager.addOperation(
         SyncOperationType.updateOrderStatus,
         {'orderId': orderIdToUpdate, 'newStatus': newStatus},
@@ -826,8 +805,7 @@ class CurrentOrder extends _$CurrentOrder {
     }
   }
 
-  /// ✓ FASE 3 BATCH API: Cargar orden para edición (CON BATCH)
-  /// Este método será optimizado en FASE 3 con batch API
+  /// Cargar orden para edición
   Future<void> loadOrderForEditing(Order orderToLoad) async {
     debugPrint("[CurrentOrder.loadOrderForEditing] Loading order ID: ${orderToLoad.id ?? 'N/A'} for editing.");
 
@@ -842,7 +820,6 @@ class CurrentOrder extends _$CurrentOrder {
       String errorDetails = "";
       bool errorAddingItems = false;
 
-      // ✓ FASE 2 BATCH API: Recolectar todos los IDs primero
       final List<String> productIds = [];
       for (final item in orderToLoad.items) {
         if (item.variationId != null && item.variationId! > 0) {
@@ -852,7 +829,6 @@ class CurrentOrder extends _$CurrentOrder {
         }
       }
 
-      // ✓ FASE 2 BATCH API: Obtener TODOS los productos en una sola petición
       Map<String, app_product.Product> productsMap = {};
       try {
         productsMap = await _productRepository.getProductsByIds(productIds, forceApi: true);
@@ -863,7 +839,6 @@ class CurrentOrder extends _$CurrentOrder {
         errorDetails = "Error al cargar productos en batch. ";
       }
 
-      // Procesar items usando los productos del batch
       for (final item in orderToLoad.items) {
         final productId = (item.variationId != null && item.variationId! > 0)
             ? item.variationId.toString()
@@ -921,7 +896,7 @@ class CurrentOrder extends _$CurrentOrder {
     }
   }
 
-  /// ✓ FASE 2 BATCH API: Duplicar orden con batch API
+  /// Duplicar orden
   Future<void> duplicateOrder(Order orderToDuplicate) async {
     debugPrint("[CurrentOrder.duplicateOrder] Duplicating order ID: ${orderToDuplicate.id ?? 'N/A'}");
 
@@ -936,7 +911,6 @@ class CurrentOrder extends _$CurrentOrder {
       bool errorFetchingProducts = false;
       String errorDetails = "";
 
-      // ✓ FASE 2 BATCH API: Recolectar todos los IDs primero
       final List<String> productIds = [];
       for (final item in orderToDuplicate.items) {
         if (item.variationId != null && item.variationId! > 0) {
@@ -946,7 +920,6 @@ class CurrentOrder extends _$CurrentOrder {
         }
       }
 
-      // ✓ FASE 2 BATCH API: Obtener TODOS los productos en una sola petición
       Map<String, app_product.Product> productsMap = {};
       try {
         productsMap = await _productRepository.getProductsByIds(productIds, forceApi: true);
@@ -957,7 +930,6 @@ class CurrentOrder extends _$CurrentOrder {
         errorDetails = "Error al cargar productos en batch. ";
       }
 
-      // Procesar items usando los productos del batch
       for (final item in orderToDuplicate.items) {
         final productId = (item.variationId != null && item.variationId! > 0)
             ? item.variationId.toString()
@@ -1047,7 +1019,7 @@ class CurrentOrder extends _$CurrentOrder {
 
       final items = List<OrderItem>.from(currentOrder.items);
       final itemIndex = items.indexWhere((item) =>
-        _getUniqueCartItemId(item.productId, item.variationId) == originalItemUniqueIdInCart);
+      _getUniqueCartItemId(item.productId, item.variationId) == originalItemUniqueIdInCart);
 
       if (itemIndex == -1) {
         _setError("No se encontró el ítem original en el pedido para actualizar la variante.", durationSeconds: 5);
@@ -1107,38 +1079,26 @@ class CurrentOrder extends _$CurrentOrder {
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // ✅ CSV LÍNEA 10: Enviar borrador a WooCommerce como 'pending'
-  // ═══════════════════════════════════════════════════════════════
+  String? _currentDraftWooCommerceId;
 
-  String? _currentDraftWooCommerceId; // Guardar ID del pedido 'pending' en WC
-
-  /// Enviar borrador a WooCommerce como status='pending' para reservar stock
-  ///
-  /// Según CSV línea 10: "enviar a woocommerce como pedido sin completar
-  /// para que guarde por 5 minutos los productos y estos se disminuya del
-  /// stock si se cancela volverá la cantidad exacta"
   Future<void> _sendDraftToWooCommerce(Order draft) async {
     try {
       debugPrint("[CurrentOrder] 🔄 Enviando borrador a WooCommerce como 'pending'...");
 
-      // Crear pedido en WooCommerce con status='pending'
       final draftForWC = draft.copyWith(
-        orderStatus: 'pending', // ← Estado 'pending' reserva stock
+        orderStatus: 'pending',
       );
 
-      // Enviar a WooCommerce
       final wooCommerceId = await _wooCommerceService.createOrderAPI(draftForWC);
 
       if (wooCommerceId != null) {
         _currentDraftWooCommerceId = wooCommerceId;
 
         debugPrint(
-          "[CurrentOrder] ✅ Borrador enviado a WC como 'pending' (ID: $wooCommerceId)\n"
-          "    Stock reservado por 5 minutos en WooCommerce"
+            "[CurrentOrder] ✅ Borrador enviado a WC como 'pending' (ID: $wooCommerceId)\n"
+                "    Stock reservado por 5 minutos en WooCommerce"
         );
 
-        // Actualizar orden local con el ID de WooCommerce
         final updatedDraft = draft.copyWith(id: wooCommerceId);
         await _orderRepository.savePendingOrder(updatedDraft, hiveCurrentOrderPendingKey);
 
@@ -1147,47 +1107,39 @@ class CurrentOrder extends _$CurrentOrder {
       }
 
     } catch (e) {
-      // No es crítico si falla - el borrador ya está guardado localmente
       debugPrint("[CurrentOrder] ⚠️ Error enviando borrador a WC (no crítico): $e");
     }
   }
 
-  /// Cancelar borrador en WooCommerce cuando se elimina localmente
-  ///
-  /// Esto libera el stock reservado en WooCommerce
   Future<void> _cancelDraftInWooCommerce() async {
     if (_currentDraftWooCommerceId == null) {
-      return; // No hay borrador en WC para cancelar
+      return;
     }
 
     try {
       debugPrint(
-        "[CurrentOrder] 🔄 Cancelando borrador en WooCommerce "
-        "(ID: $_currentDraftWooCommerceId)..."
+          "[CurrentOrder] 🔄 Cancelando borrador en WooCommerce "
+              "(ID: $_currentDraftWooCommerceId)..."
       );
 
-      // Cambiar status a 'cancelled' o eliminar el pedido
       await _wooCommerceService.updateOrderStatus(
         _currentDraftWooCommerceId!,
         'cancelled',
       );
 
       debugPrint(
-        "[CurrentOrder] ✅ Borrador cancelado en WC\n"
-        "    Stock liberado automáticamente"
+          "[CurrentOrder] ✅ Borrador cancelado en WC\n"
+              "    Stock liberado automáticamente"
       );
 
       _currentDraftWooCommerceId = null;
 
     } catch (e) {
       debugPrint("[CurrentOrder] ⚠️ Error cancelando borrador en WC: $e");
-      // No crítico - WooCommerce tiene timeout automático de 5 minutos
     }
   }
 }
 
-/// ✓ FASE 1 RIVERPOD: Provider para resumen de orden
-/// Derivado automáticamente de la orden actual
 @riverpod
 OrderSummary orderSummary(OrderSummaryRef ref) {
   final currentOrderAsync = ref.watch(currentOrderProvider);

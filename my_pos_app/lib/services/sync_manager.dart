@@ -19,15 +19,6 @@ import '../locator.dart'; // Para obtener InventoryRepository
 enum SyncTask { none, pending, full }
 
 /// ✓ PROPUESTA 2: PERSISTENT QUEUE MANAGER - Implementación Completa al 100%
-///
-/// Mejoras implementadas:
-/// 1. ✅ Priorización de operaciones (cola ordenada por prioridad)
-/// 2. ✅ Backoff exponencial (reintentos inteligentes con delays crecientes)
-/// 3. ✅ Deduplicación (idempotency keys para evitar duplicados)
-/// 4. ✅ Estados detallados (pending, retrying, failed, blocked)
-/// 5. ✅ NO detiene el proceso completo en errores (continúa con la siguiente operación)
-/// 6. ✅ Límite de reintentos configurable (por defecto 10)
-/// 7. ✅ Tracking mejorado de métricas (operaciones procesadas, fallos, tiempo)
 class SyncManager extends ChangeNotifier {
   final WooCommerceService _wooCommerceService;
   final StorageService _storageService;
@@ -107,11 +98,11 @@ class SyncManager extends ChangeNotifier {
 
   /// ✓ PROPUESTA 2: Agregar operación con soporte de prioridad e idempotency
   Future<void> addOperation(
-    SyncOperationType type,
-    Map<String, dynamic> data, {
-    int? priority,
-    String? idempotencyKey,
-  }) async {
+      SyncOperationType type,
+      Map<String, dynamic> data, {
+        int? priority,
+        String? idempotencyKey,
+      }) async {
     // ✓ DEDUPLICACIÓN: Generar idempotency key si no se provee
     final effectiveIdempotencyKey = idempotencyKey ??
         _generateIdempotencyKey(type, data);
@@ -149,18 +140,19 @@ class SyncManager extends ChangeNotifier {
 
     switch (type) {
       case SyncOperationType.createOrder:
-        // Para órdenes, usar el localId si existe
+      // Para órdenes, usar el localId si existe
         final localId = data['localId'];
         keyBase += localId ?? data.hashCode.toString();
         break;
       case SyncOperationType.updateOrderStatus:
-        // Para actualizaciones, usar orderId + newStatus
+      // Para actualizaciones, usar orderId + newStatus
         keyBase += '${data['orderId']}_${data['newStatus']}';
         break;
       case SyncOperationType.inventoryAdjustment:
-        // Para inventario, usar un hash del movimiento
+      // Para inventario, usar el ID del movimiento si existe, o un hash
         final movement = data['movement'];
-        keyBase += movement.hashCode.toString();
+        final mId = movement is Map ? movement['id'] : movement.hashCode;
+        keyBase += mId.toString();
         break;
     }
 
@@ -493,42 +485,29 @@ class SyncManager extends ChangeNotifier {
   }
 
   /// ✅ LOCAL-FIRST: Procesar ajuste de inventario con reintento
-  /// Envía el batch a WooCommerce y actualiza el sync status en ObjectBox
+  /// CORRECCIÓN: Usa submitInventoryAdjustment para registrar historial completo
   Future<void> _processInventoryAdjustment(SyncOperation operation) async {
     debugPrint("[SyncManager] 🔧 Processing inventory adjustment: ${operation.id}");
 
     try {
       final movement = InventoryMovement.fromJson(operation.data['movement']);
 
-      // Preparar batch de actualizaciones para WooCommerce
-      final batchItems = movement.items.map((item) {
-        return {
-          'id': item.productId,
-          'stock': item.quantityChanged.abs(),
-          'operation': item.quantityChanged > 0 ? 'add' : 'subtract',
-        };
-      }).toList();
+      debugPrint("[SyncManager] Sending full inventory adjustment to WooCommerce (History + Stock)...");
 
-      debugPrint("[SyncManager] Sending batch to WooCommerce: ${batchItems.length} items");
+      // 🔄 CORRECCIÓN: Usar submitInventoryAdjustment en lugar de batchUpdateStock
+      // Esto asegura que el movimiento se registre en el historial del servidor
+      await _wooCommerceService.submitInventoryAdjustment(movement);
 
-      // Enviar a WooCommerce
-      final response = await _wooCommerceService.batchUpdateStock(batchItems);
+      debugPrint('[SyncManager] ✅ Inventory adjustment synced successfully');
 
-      if (response['success'] == true) {
-        final updated = response['updated'] as int? ?? 0;
-        debugPrint('[SyncManager] ✅ Inventory adjustment synced to WooCommerce: $updated products');
-
-        // ✅ Actualizar estado de sincronización en ObjectBox
-        try {
-          final inventoryRepo = getIt<InventoryRepository>();
-          await inventoryRepo.updateMovementSyncStatus(movement.id, true);
-          debugPrint('[SyncManager] ✅ Movement ${movement.id} marked as synced in ObjectBox');
-        } catch (e) {
-          debugPrint('[SyncManager] ⚠️ Error updating sync status (non-critical): $e');
-          // No es crítico - la sincronización con WooCommerce fue exitosa
-        }
-      } else {
-        throw ApiException('WooCommerce returned success=false for batch update');
+      // ✅ Actualizar estado de sincronización en ObjectBox
+      try {
+        final inventoryRepo = getIt<InventoryRepository>();
+        await inventoryRepo.updateMovementSyncStatus(movement.id, true);
+        debugPrint('[SyncManager] ✅ Movement ${movement.id} marked as synced in ObjectBox');
+      } catch (e) {
+        debugPrint('[SyncManager] ⚠️ Error updating sync status (non-critical): $e');
+        // No es crítico - la sincronización con WooCommerce fue exitosa
       }
 
     } catch (e) {

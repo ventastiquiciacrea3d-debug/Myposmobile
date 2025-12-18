@@ -403,7 +403,14 @@ class _AddToCartDialogState extends ConsumerState<AddToCartDialog> {
             if (_variationError != null) Padding(padding: const EdgeInsets.only(top: 8.0), child: Text(_variationError!, style: TextStyle(color: Colors.red.shade700, fontSize: 12))),
           ],
           const SizedBox(height:12),
-          Row( mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [ Text('Cantidad:', style: theme.textTheme.titleMedium), QuantitySelector( key: ValueKey('${productForDisplay.id}_qtySelector_$_selectedQuantity'), value: _selectedQuantity, minValue: 0,
+          Row( mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [ Text('Cantidad:', style: theme.textTheme.titleMedium), QuantitySelector(
+            // 🔥 SOLUCIÓN 1: Eliminamos la cantidad de la KEY
+            // Antes: ValueKey('${productForDisplay.id}_qtySelector_$_selectedQuantity')
+            // Ahora: La key es estable para el producto. Si escribes "1", el estado se actualiza en el padre
+            // pero el widget QuantitySelector NO se reconstruye desde cero, manteniendo el foco.
+            key: ValueKey('${productForDisplay.id}_qtySelector'),
+            value: _selectedQuantity,
+            minValue: 0,
             maxValue: _currentIsAvailable ? (_currentStockQuantity == -1 ? 9999 : _currentStockQuantity) : 0,
             onChanged: (value) { if (mounted) setState(() => _selectedQuantity = value); },
           ),

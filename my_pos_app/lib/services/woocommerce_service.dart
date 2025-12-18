@@ -791,6 +791,38 @@ class WooCommerceService {
     }
   }
 
+  /// 🟢 ✅ FIX: Obtener movimientos de inventario delta
+  Future<Map<String, dynamic>> getInventoryDelta({
+    required int since,
+  }) async {
+    if (!await _connectivityService.checkConnectivity()) {
+      throw NetworkException("Sin conexión para obtener inventario delta.");
+    }
+
+    if (connectionMode != 'plugin') {
+      throw ApiException("El endpoint delta solo está soportado en modo plugin.");
+    }
+
+    try {
+      final dio = await _getDioClient();
+
+      final response = await dio.get(
+        'wp-json/mypos/v1/inventory/delta',
+        queryParameters: {'since': since},
+      );
+
+      final data = _tryParseResponseData(response);
+      if (data is Map<String, dynamic>) {
+        return data;
+      }
+
+      throw InvalidDataException("Respuesta inesperada del endpoint inventario delta.");
+    } on DioException catch (e) {
+      _handleDioError(e, "obtener inventario delta", throwException: true);
+      throw StateError("Unreachable");
+    }
+  }
+
   Future<List<Map<String, dynamic>>> getCustomers({int perPage = 10, String orderBy = 'name', String order = 'asc'}) async {
     if (!await _connectivityService.checkConnectivity()) throw NetworkException("Sin conexión.");
     try {
@@ -1364,8 +1396,8 @@ class WooCommerceService {
 
   /// Actualización masiva de stock (80% más rápido)
   Future<Map<String, dynamic>> batchUpdateStock(
-    List<Map<String, dynamic>> items,
-  ) async {
+      List<Map<String, dynamic>> items,
+      ) async {
     if (!await _connectivityService.checkConnectivity()) {
       throw NetworkException("Sin conexión.");
     }
@@ -1397,8 +1429,8 @@ class WooCommerceService {
 
   /// Actualización masiva de precios
   Future<Map<String, dynamic>> batchUpdatePrices(
-    List<Map<String, dynamic>> items,
-  ) async {
+      List<Map<String, dynamic>> items,
+      ) async {
     if (!await _connectivityService.checkConnectivity()) {
       throw NetworkException("Sin conexión.");
     }
@@ -1430,8 +1462,8 @@ class WooCommerceService {
 
   /// Super Batch: Múltiples operaciones en una transacción
   Future<Map<String, dynamic>> batchOperations(
-    List<Map<String, dynamic>> operations,
-  ) async {
+      List<Map<String, dynamic>> operations,
+      ) async {
     if (!await _connectivityService.checkConnectivity()) {
       throw NetworkException("Sin conexión.");
     }

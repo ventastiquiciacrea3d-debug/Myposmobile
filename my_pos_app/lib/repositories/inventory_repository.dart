@@ -10,7 +10,9 @@ import '../locator.dart';
 import '../repositories/product_repository.dart';
 import '../services/database_service.dart';
 import '../services/inventory_converter_service.dart';
-import '../objectbox.g.dart'; // Para query builders
+import '../objectbox.g.dart';
+import '../services/sync_manager.dart'; // ✅ Importar SyncManager
+import '../models/sync_operation.dart'; // ✅ Importar tipos de Sync
 
 /// ✓ PROPUESTA 1: InventoryRepository con patrón SWR (Stale-While-Revalidate) completo
 ///
@@ -20,9 +22,13 @@ import '../objectbox.g.dart'; // Para query builders
 /// 3. ✅ Background updates automáticos con cache stale
 /// 4. ✅ Fallback a caché en errores de red
 /// 5. ✅ Cache warming para precarga de datos
+/// 6. ✅ Integración con SyncManager para subida inmediata
 class InventoryRepository {
   final WooCommerceService _wooCommerceService = getIt<WooCommerceService>();
   final ProductRepository _productRepository = getIt<ProductRepository>();
+  // ✅ Obtener instancia de SyncManager
+  final SyncManager _syncManager = getIt<SyncManager>();
+
   String? errorMessage;
 
   // ✅ OBJECTBOX - Base de datos principal
@@ -197,10 +203,13 @@ class InventoryRepository {
       // putMany() actualizará existentes y creará nuevos
       box.putMany(compactMovements);
 
-      // ⚡ FIX: Eliminar movimientos que ya no están en el servidor
+      // ⚡ FIX CRÍTICO: Eliminar SOLO movimientos que estaban sincronizados
+      // y que ya no están en el servidor (borrados remotamente).
+      // LOS QUE NO ESTÁN SINCRONIZADOS SE CONSERVAN (pendientes de subida).
       final serverMovementIds = serverMovements.map((m) => m.id).toSet();
       final toRemove = existingMovements
           .where((e) => !serverMovementIds.contains(e.movementId))
+          .where((e) => e.isSynced) // <--- CORRECCIÓN VITAL: Solo borrar si ya estaba sincronizado
           .map((e) => e.localId)
           .toList();
 
@@ -227,6 +236,55 @@ class InventoryRepository {
     return serverMovements..sort((a, b) => b.date.compareTo(a.date));
   }
 
+  // ==================== NUEVO MÉTODO PARA CREACIÓN ROBUSTA ====================
+
+  /// ✅ NUEVO MÉTODO ROBUSTO: Crea movimiento localmente y lo encola
+  /// Reemplaza al antiguo submitInventoryAdjustment directo
+  Future<void> createInventoryMovement(InventoryMovement movement) async {
+    debugPrint("[InventoryRepository] Creating inventory movement: ${movement.description}");
+    errorMessage = null;
+
+    try {
+      // 1. Guardar localmente primero (Estado: No Sincronizado)
+      // Aseguramos que isSynced sea false
+      final localMovement = InventoryMovement(
+        id: movement.id,
+        date: movement.date,
+        type: movement.type,
+        description: movement.description,
+        items: movement.items,
+        isSynced: false, // 🔴 Importante: Marcado como no sincronizado
+        userId: movement.userId,
+        userName: movement.userName,
+      );
+
+      await saveInventoryMovement(localMovement);
+
+      // Notificar a la UI inmediatamente para que aparezca en la lista
+      _movementUpdateController.add(localMovement);
+
+      // 2. Agregar a la cola de sincronización (SyncManager)
+      // Esto garantiza que se envíe inmediatamente si hay red, o luego si no.
+      await _syncManager.addOperation(
+        SyncOperationType.inventoryAdjustment,
+        {'movement': localMovement.toJson()},
+        priority: SyncPriority.high,
+      );
+
+      debugPrint("[InventoryRepository] ✅ Movement created locally and queued for sync.");
+
+    } catch (e) {
+      debugPrint("[InventoryRepository] ❌ Error creating movement: $e");
+      errorMessage = "Error al guardar el movimiento: $e";
+      rethrow;
+    }
+  }
+
+  /// Mantenemos este por compatibilidad, pero lo redirigimos al nuevo flujo
+  Future<void> submitInventoryAdjustment(InventoryMovement movement) async {
+    return createInventoryMovement(movement);
+  }
+
   // ==================== MÉTODOS LEGACY (Backward compatibility) ====================
 
   /// ✅ OBJECTBOX ONLY: Método legacy - usa getInventoryMovementsWithSWR internamente
@@ -243,13 +301,13 @@ class InventoryRepository {
 
         final filtered = searchTerm != null && searchTerm.trim().isNotEmpty
             ? movements.where((m) {
-                final term = searchTerm.toLowerCase().trim();
-                return m.description.toLowerCase().contains(term) ||
-                    m.userName?.toLowerCase().contains(term) == true ||
-                    m.items.any((item) =>
-                    item.productName.toLowerCase().contains(term) ||
-                        item.sku.toLowerCase().contains(term));
-              }).toList()
+          final term = searchTerm.toLowerCase().trim();
+          return m.description.toLowerCase().contains(term) ||
+              m.userName?.toLowerCase().contains(term) == true ||
+              m.items.any((item) =>
+              item.productName.toLowerCase().contains(term) ||
+                  item.sku.toLowerCase().contains(term));
+        }).toList()
             : movements;
 
         final totalItems = filtered.length;
@@ -280,13 +338,13 @@ class InventoryRepository {
 
           final filtered = searchTerm != null && searchTerm.trim().isNotEmpty
               ? cachedMovements.where((m) {
-                  final term = searchTerm.toLowerCase().trim();
-                  return m.description.toLowerCase().contains(term) ||
-                      m.userName?.toLowerCase().contains(term) == true ||
-                      m.items.any((item) =>
-                      item.productName.toLowerCase().contains(term) ||
-                          item.sku.toLowerCase().contains(term));
-                }).toList()
+            final term = searchTerm.toLowerCase().trim();
+            return m.description.toLowerCase().contains(term) ||
+                m.userName?.toLowerCase().contains(term) == true ||
+                m.items.any((item) =>
+                item.productName.toLowerCase().contains(term) ||
+                    item.sku.toLowerCase().contains(term));
+          }).toList()
               : cachedMovements;
 
           final totalItems = filtered.length;
@@ -312,18 +370,6 @@ class InventoryRepository {
       searchTerm: searchTerm,
       ttlDuration: inventoryHistoryCacheTTL,
     );
-  }
-
-  // (El resto del archivo permanece sin cambios)
-
-  Future<void> submitInventoryAdjustment(InventoryMovement movement) async {
-    errorMessage = null;
-    try {
-      await _wooCommerceService.submitInventoryAdjustment(movement);
-    } on ApiException catch (e) {
-      errorMessage = e.message;
-      rethrow;
-    }
   }
 
   /// ✅ OBJECTBOX ONLY: Guardar movement en ObjectBox
@@ -499,12 +545,12 @@ class InventoryRepository {
 
           // Agregar future de carga de variaciones
           variationFutures.add(
-            _wooCommerceService.getAllVariationsForProduct(parent.id).then((variationsData) {
-              return {'parent': parent, 'variations': variationsData};
-            }).catchError((e) {
-              debugPrint("⚠️ Failed to load variations for product ${parent.id}: $e");
-              return {'parent': parent, 'variations': <Map<String, dynamic>>[]};
-            })
+              _wooCommerceService.getAllVariationsForProduct(parent.id).then((variationsData) {
+                return {'parent': parent, 'variations': variationsData};
+              }).catchError((e) {
+                debugPrint("⚠️ Failed to load variations for product ${parent.id}: $e");
+                return {'parent': parent, 'variations': <Map<String, dynamic>>[]};
+              })
           );
 
           // 🟡 Ejecutar batch cuando alcanzamos el límite o fin de lista
@@ -515,8 +561,8 @@ class InventoryRepository {
               final variationsData = result['variations'] as List;
               for (final variationJson in variationsData) {
                 allProducts.add(app_product.Product.fromJson(
-                  variationJson as Map<String, dynamic>,
-                  parentNameForVariation: parent.name
+                    variationJson as Map<String, dynamic>,
+                    parentNameForVariation: parent.name
                 ));
               }
             }
@@ -566,16 +612,16 @@ class InventoryRepository {
         // Agregar future al batch
         if (variationId != null && variationId != '0' && productId != null) {
           refreshFutures.add(
-            _productRepository.getVariationById(productId, variationId, forceApi: true)
-              .catchError((e) {
+              _productRepository.getVariationById(productId, variationId, forceApi: true)
+                  .catchError((e) {
                 debugPrint("⚠️ Failed to refresh variation $variationId: $e");
                 return null;
               })
           );
         } else if (productId != null) {
           refreshFutures.add(
-            _productRepository.getProductById(productId, forceApi: true)
-              .catchError((e) {
+              _productRepository.getProductById(productId, forceApi: true)
+                  .catchError((e) {
                 debugPrint("⚠️ Failed to refresh product $productId: $e");
                 return null;
               })

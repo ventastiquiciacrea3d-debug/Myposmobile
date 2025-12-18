@@ -12,7 +12,8 @@ part 'order_history_notifier.g.dart';
 
 /// ✓ FASE 1 RIVERPOD: Notifier para el historial de órdenes con paginación
 /// Reemplaza la parte de historial de OrderProvider
-@riverpod
+/// ✅ FIX: keepAlive: true para evitar que se reinicie al cambiar de tabs
+@Riverpod(keepAlive: true)
 class OrderHistory extends _$OrderHistory {
   late OrderRepository _orderRepository;
 
@@ -48,6 +49,8 @@ class OrderHistory extends _$OrderHistory {
       final response = await _orderRepository.getOrderHistory(
         page: state.currentPage,
         perPage: 20,
+        searchTerm: searchTerm, // ✅ FIX: Pasar término de búsqueda si existe
+        status: status,         // ✅ FIX: Pasar status si existe
       );
 
       final List<Order> newOrders = response['orders'];
