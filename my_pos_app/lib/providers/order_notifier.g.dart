@@ -8,10 +8,7 @@ part of 'order_notifier.dart';
 
 String _$orderSummaryHash() => r'5a13bba864e5af53533c039a355683ad2b93c918';
 
-/// ✓ FASE 1 RIVERPOD: Provider para resumen de orden
-/// Derivado automáticamente de la orden actual
-///
-/// Copied from [orderSummary].
+/// See also [orderSummary].
 @ProviderFor(orderSummary)
 final orderSummaryProvider = AutoDisposeProvider<OrderSummary>.internal(
   orderSummary,
@@ -25,10 +22,9 @@ final orderSummaryProvider = AutoDisposeProvider<OrderSummary>.internal(
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
 typedef OrderSummaryRef = AutoDisposeProviderRef<OrderSummary>;
-String _$currentOrderHash() => r'ae00a82f414e82e132b0266e7465aa2ea2980993';
+String _$currentOrderHash() => r'392aedf441389c5f6f8711a57dde4adb898d4866';
 
-/// ✓ FASE 1 RIVERPOD: Notifier para la orden actual
-/// Reemplaza OrderProvider (parte de orden actual)
+/// Notifier para la orden actual
 ///
 /// Copied from [CurrentOrder].
 @ProviderFor(CurrentOrder)

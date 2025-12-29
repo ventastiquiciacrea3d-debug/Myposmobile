@@ -10,6 +10,7 @@ import '../locator.dart';
 import '../repositories/product_repository.dart';
 import '../services/database_service.dart';
 import '../services/inventory_converter_service.dart';
+import '../services/storage_service.dart'; // 🔍 Para debug de sync queue
 import '../objectbox.g.dart';
 import '../services/sync_manager.dart'; // ✅ Importar SyncManager
 import '../models/sync_operation.dart'; // ✅ Importar tipos de Sync
@@ -39,11 +40,20 @@ class InventoryRepository {
   final StreamController<InventoryMovement> _movementUpdateController = StreamController<InventoryMovement>.broadcast();
   Stream<InventoryMovement> get onMovementUpdatedFromApi => _movementUpdateController.stream;
 
+  // ✅ Stream para emitir conteo de movimientos no sincronizados (evita llamadas repetidas)
+  final StreamController<int> _unsyncedCountController = StreamController<int>.broadcast();
+  Stream<int> get unsyncedMovementsCountStream => _unsyncedCountController.stream;
+  int _cachedUnsyncedCount = 0;
+
   static const Duration inventoryHistoryCacheTTL = Duration(minutes: 30);
   static const Duration inventoryProductsCacheTTL = Duration(hours: 1);
 
   // Timestamp de último fetch desde API
   DateTime? _lastInventoryHistoryFetch;
+
+  // ✅ Control de background refresh para evitar múltiples llamadas simultáneas
+  bool _isBackgroundRefreshInProgress = false;
+  DateTime? _lastBackgroundRefreshAttempt;
 
   InventoryRepository() {
     debugPrint("[InventoryRepository] ✓ Initialized with SWR pattern (TTL Cache Mode for Inventory).");
@@ -154,13 +164,32 @@ class InventoryRepository {
   }
 
   /// ✅ OBJECTBOX ONLY: Background update silencioso para mantener caché fresco
+  /// Incluye debouncing para evitar múltiples llamadas simultáneas
   Future<void> _fetchAndUpdateInventoryInBackground() async {
+    // ✅ Evitar múltiples refreshes simultáneos
+    if (_isBackgroundRefreshInProgress) {
+      debugPrint("... ⏭️ [Background Update] Already in progress, skipping");
+      return;
+    }
+
+    // ✅ Evitar refreshes muy frecuentes (mínimo 10 segundos entre intentos)
+    if (_lastBackgroundRefreshAttempt != null &&
+        DateTime.now().difference(_lastBackgroundRefreshAttempt!) < const Duration(seconds: 10)) {
+      debugPrint("... ⏭️ [Background Update] Too soon (${DateTime.now().difference(_lastBackgroundRefreshAttempt!).inSeconds}s), skipping");
+      return;
+    }
+
+    _isBackgroundRefreshInProgress = true;
+    _lastBackgroundRefreshAttempt = DateTime.now();
+
     debugPrint("... 🔄 [Background Update] Starting for Inventory History");
     try {
       await _fetchAndCacheInventoryHistory();
       debugPrint("... ✅ [Background Update] Cache updated for Inventory History");
     } catch (e) {
       debugPrint("... ⚠️ [Background Update] Failed for Inventory History: ${e.toString()}");
+    } finally {
+      _isBackgroundRefreshInProgress = false;
     }
   }
 
@@ -172,6 +201,16 @@ class InventoryRepository {
     }
 
     final serverMovements = await _wooCommerceService.getInventoryHistory();
+
+    // 🔍 DEBUG: Log de movimientos recibidos del servidor
+    debugPrint("... 🔍 [DEBUG] Server returned ${serverMovements.length} movements");
+    if (serverMovements.isNotEmpty) {
+      debugPrint("... 🔍 [DEBUG] First 3 movement IDs from server:");
+      for (var i = 0; i < (serverMovements.length > 3 ? 3 : serverMovements.length); i++) {
+        final m = serverMovements[i];
+        debugPrint("...   ${i + 1}. ${m.id} - ${m.description}");
+      }
+    }
 
     try {
       final box = _db!.store.box<InventoryMovementCompact>();
@@ -189,7 +228,19 @@ class InventoryRepository {
 
       // Convertir movimientos y asignar localId si ya existen
       final compactMovements = serverMovements.map((movement) {
-        final compact = _converter!.movementToCompact(movement);
+        // ✅ Marcar como sincronizado porque vienen del servidor
+        final syncedMovement = InventoryMovement(
+          id: movement.id,
+          date: movement.date,
+          type: movement.type,
+          description: movement.description,
+          items: movement.items,
+          isSynced: true,  // ✅ Vienen del servidor, están sincronizados
+          userId: movement.userId,
+          userName: movement.userName,
+        );
+
+        final compact = _converter!.movementToCompact(syncedMovement);
 
         // ⚡ FIX: Si ya existe, copiar el localId para actualizar
         if (existingLocalIds.containsKey(compact.movementId)) {
@@ -203,20 +254,36 @@ class InventoryRepository {
       // putMany() actualizará existentes y creará nuevos
       box.putMany(compactMovements);
 
-      // ⚡ FIX CRÍTICO: Eliminar SOLO movimientos que estaban sincronizados
-      // y que ya no están en el servidor (borrados remotamente).
-      // LOS QUE NO ESTÁN SINCRONIZADOS SE CONSERVAN (pendientes de subida).
+      // ✅ FIX CRÍTICO: NO eliminar movimientos locales
+      // Los movimientos creados en la app NO se guardan en WordPress (solo actualizan stock)
+      // Por lo tanto, NUNCA aparecerán en /inventory-history del servidor
+      // Solo debemos AGREGAR movimientos del servidor, NUNCA eliminar los locales
+
       final serverMovementIds = serverMovements.map((m) => m.id).toSet();
-      final toRemove = existingMovements
+
+      // 🔍 DEBUG: Loggear IDs del servidor para diagnóstico
+      debugPrint("\n========== 🔍 INVENTORY SYNC DEBUG ==========");
+      debugPrint("... 🔍 [DEBUG] Server returned ${serverMovementIds.length} movements");
+      final serverIdsList = serverMovementIds.toList();
+      for (var i = 0; i < (serverIdsList.length > 3 ? 3 : serverIdsList.length); i++) {
+        debugPrint("...   Server ID ${i + 1}: ${serverIdsList[i]}");
+      }
+
+      // Encontrar movimientos locales que NO están en el servidor (para info solamente)
+      final localOnlyMovements = existingMovements
           .where((e) => !serverMovementIds.contains(e.movementId))
-          .where((e) => e.isSynced) // <--- CORRECCIÓN VITAL: Solo borrar si ya estaba sincronizado
-          .map((e) => e.localId)
           .toList();
 
-      if (toRemove.isNotEmpty) {
-        box.removeMany(toRemove);
-        debugPrint("... 🗑️ Removed ${toRemove.length} stale movements from ObjectBox");
+      debugPrint("... 🔍 [DEBUG] Found ${localOnlyMovements.length} local-only movements:");
+      for (var i = 0; i < (localOnlyMovements.length > 3 ? 3 : localOnlyMovements.length); i++) {
+        final mov = localOnlyMovements[i];
+        debugPrint("...   - ${mov.movementId} (isSynced: ${mov.isSynced})");
       }
+
+      // ✅ NO eliminar nada - los movimientos locales son la fuente de verdad
+      debugPrint("... ✅ Keeping all ${localOnlyMovements.length} local movements (NOT deleting)");
+      debugPrint("... ℹ️  Local movements are app's source of truth and should never be deleted");
+      debugPrint("========== END INVENTORY SYNC DEBUG ==========\n");
 
       debugPrint("... ✅ Saved ${compactMovements.length} movements to ObjectBox (${existingLocalIds.length} updated, ${compactMovements.length - existingLocalIds.length} new)");
     } catch (e) {
@@ -227,13 +294,32 @@ class InventoryRepository {
     // Actualizar timestamp de último fetch
     _lastInventoryHistoryFetch = DateTime.now();
 
-    // Notificar listeners de cada movimiento nuevo
+    // ✅ CORRECCIÓN CRÍTICA: Volver a leer TODOS los movimientos de ObjectBox
+    // Esto incluye los del servidor + los locales no sincronizados
+    List<InventoryMovement> allMovements = [];
+    try {
+      final box = _db!.store.box<InventoryMovementCompact>();
+      final compactMovements = box.getAll();
+      allMovements = compactMovements
+          .map((compact) => _converter!.compactToMovement(compact))
+          .toList()
+        ..sort((a, b) => b.date.compareTo(a.date));
+
+      final unsyncedCount = allMovements.where((m) => !m.isSynced).length;
+      debugPrint("... ✅ Loaded ${allMovements.length} total movements from ObjectBox (${serverMovements.length} from server, $unsyncedCount unsynced local)");
+    } catch (e) {
+      debugPrint("[InventoryRepository._fetchAndCacheInventoryHistory] ❌ Error reading all movements: $e");
+      // Fallback a solo los del servidor
+      allMovements = serverMovements;
+    }
+
+    // Notificar listeners de cada movimiento nuevo del servidor
     for (final movement in serverMovements) {
       _movementUpdateController.add(movement);
     }
 
-    debugPrint("... ✅ Fetched and synced ${serverMovements.length} movements from server.");
-    return serverMovements..sort((a, b) => b.date.compareTo(a.date));
+    debugPrint("... ✅ Fetched and synced ${serverMovements.length} movements from server. Returning ${allMovements.length} total.");
+    return allMovements;
   }
 
   // ==================== NUEVO MÉTODO PARA CREACIÓN ROBUSTA ====================
@@ -242,6 +328,20 @@ class InventoryRepository {
   /// Reemplaza al antiguo submitInventoryAdjustment directo
   Future<void> createInventoryMovement(InventoryMovement movement) async {
     debugPrint("[InventoryRepository] Creating inventory movement: ${movement.description}");
+    debugPrint("  Movement ID: ${movement.id}");
+    debugPrint("  Date: ${movement.date}");
+    debugPrint("  Type: ${movement.type}");
+    debugPrint("  Items count: ${movement.items.length}");
+
+    // ✅ DEBUG: Log detalles de cada item
+    for (var item in movement.items) {
+      debugPrint("  Item: ${item.productName}");
+      debugPrint("    ProductID: ${item.productId}");
+      debugPrint("    VariationID: ${item.variationId}");
+      debugPrint("    SKU: ${item.sku}");
+      debugPrint("    Quantity: ${item.quantityChanged}");
+    }
+
     errorMessage = null;
 
     try {
@@ -258,13 +358,17 @@ class InventoryRepository {
         userName: movement.userName,
       );
 
+      debugPrint("[InventoryRepository] Saving to ObjectBox...");
       await saveInventoryMovement(localMovement);
+      debugPrint("[InventoryRepository] ✅ Saved to ObjectBox");
 
       // Notificar a la UI inmediatamente para que aparezca en la lista
       _movementUpdateController.add(localMovement);
+      debugPrint("[InventoryRepository] ✅ Notified UI");
 
       // 2. Agregar a la cola de sincronización (SyncManager)
       // Esto garantiza que se envíe inmediatamente si hay red, o luego si no.
+      debugPrint("[InventoryRepository] Queueing for sync...");
       await _syncManager.addOperation(
         SyncOperationType.inventoryAdjustment,
         {'movement': localMovement.toJson()},
@@ -401,6 +505,9 @@ class InventoryRepository {
       box.put(compact);
 
       debugPrint("[InventoryRepository] ✅ Movement ID ${movement.id} ${existing != null ? 'updated' : 'saved'} to ObjectBox");
+
+      // ✅ Actualizar conteo de movimientos no sincronizados
+      await _updateUnsyncedCount();
     } catch (e) {
       debugPrint("[InventoryRepository.saveInventoryMovement] ❌ Error saving to ObjectBox: $e");
       rethrow;
@@ -762,10 +869,16 @@ class InventoryRepository {
 
   /// ✅ LOCAL-FIRST: Obtener conteo de movimientos pendientes de sincronización
   /// Útil para mostrar badges o indicadores en UI
-  Future<int> getUnsyncedMovementsCount() async {
+  /// Ahora con caché para evitar llamadas repetidas
+  Future<int> getUnsyncedMovementsCount({bool forceRefresh = false}) async {
     if (_db == null) {
       debugPrint("[InventoryRepository.getUnsyncedMovementsCount] ❌ ObjectBox not initialized");
       return 0;
+    }
+
+    // Retornar caché si no se fuerza refresh
+    if (!forceRefresh && _cachedUnsyncedCount >= 0) {
+      return _cachedUnsyncedCount;
     }
 
     try {
@@ -774,12 +887,24 @@ class InventoryRepository {
       final count = query.count();
       query.close();
 
-      debugPrint("[InventoryRepository] 📊 Unsynced movements count: $count");
+      // Solo log si cambió el conteo
+      if (_cachedUnsyncedCount != count) {
+        debugPrint("[InventoryRepository] 📊 Unsynced movements count: $count");
+        _cachedUnsyncedCount = count;
+        _unsyncedCountController.add(count); // Emitir al stream
+      }
+
       return count;
     } catch (e) {
       debugPrint("[InventoryRepository.getUnsyncedMovementsCount] ❌ Error: $e");
       return 0;
     }
+  }
+
+  /// ✅ Método auxiliar para actualizar el conteo de movimientos no sincronizados
+  /// Llamar después de guardar/actualizar/eliminar movimientos
+  Future<void> _updateUnsyncedCount() async {
+    await getUnsyncedMovementsCount(forceRefresh: true);
   }
 
   /// ✅ LOCAL-FIRST: SOLO sincronizar historial cuando sea necesario (manual o forzado)
@@ -844,6 +969,121 @@ class InventoryRepository {
       debugPrint('[InventoryRepository] ❌ Error syncing from WooCommerce: $e');
       rethrow;
     }
+  }
+
+  /// 🔍 DEBUG: Método de diagnóstico para investigar movimientos faltantes
+  Future<void> debugPrintAllMovements() async {
+    if (_db == null || _converter == null) {
+      debugPrint("[InventoryRepository.DEBUG] ❌ ObjectBox not initialized");
+      return;
+    }
+
+    debugPrint("\n==================== 🔍 DIAGNÓSTICO DE INVENTARIO ====================");
+
+    // 1. Contar todos los movimientos en ObjectBox
+    final box = _db!.store.box<InventoryMovementCompact>();
+    final allCompact = box.getAll();
+
+    debugPrint("[DEBUG] Total movimientos en ObjectBox: ${allCompact.length}");
+
+    // 2. Separar sincronizados vs no sincronizados
+    final synced = allCompact.where((m) => m.isSynced).toList();
+    final unsynced = allCompact.where((m) => !m.isSynced).toList();
+
+    debugPrint("[DEBUG] Sincronizados: ${synced.length}");
+    debugPrint("[DEBUG] NO sincronizados: ${unsynced.length}");
+
+    // 3. Mostrar últimos 5 movimientos (todos, ordenados por fecha)
+    allCompact.sort((a, b) => b.date.compareTo(a.date));
+    final latest5 = allCompact.take(5).toList();
+
+    debugPrint("\n--- 📋 ÚLTIMOS 5 MOVIMIENTOS EN OBJECTBOX ---");
+    for (var i = 0; i < latest5.length; i++) {
+      final compact = latest5[i];
+      final movement = _converter!.compactToMovement(compact);
+      final dateTime = compact.date;
+
+      debugPrint("${i + 1}. [${compact.isSynced ? '✅ SYNCED' : '❌ UNSYNCED'}]");
+      debugPrint("   ID: ${compact.movementId}");
+      debugPrint("   Fecha: $dateTime (${dateTime.hour}:${dateTime.minute.toString().padLeft(2, '0')})");
+      debugPrint("   Tipo: ${movement.type}");
+      debugPrint("   Descripción: ${movement.description}");
+      debugPrint("   Items: ${movement.items.length}");
+
+      if (movement.items.isNotEmpty) {
+        final firstItem = movement.items.first;
+        debugPrint("   Primer Item: ${firstItem.productName}");
+        debugPrint("     - SKU: ${firstItem.sku}");
+        debugPrint("     - ProductID: ${firstItem.productId}");
+        debugPrint("     - VariationID: ${firstItem.variationId ?? 'null'}");
+        debugPrint("     - Cantidad: ${firstItem.quantityChanged}");
+      }
+      debugPrint("");
+    }
+
+    // 4. Obtener estadísticas de la cola de sincronización
+    final syncStats = _syncManager.getQueueStatistics();
+
+    debugPrint("\n--- 📊 ESTADÍSTICAS DE SYNC QUEUE ---");
+    debugPrint("Total operaciones en cola: ${syncStats['total']}");
+    debugPrint("Por estado: ${syncStats['byStatus']}");
+    debugPrint("Por tipo: ${syncStats['byType']}");
+    debugPrint("Procesadas: ${syncStats['totalProcessed']}");
+    debugPrint("Exitosas: ${syncStats['totalSucceeded']}");
+    debugPrint("Fallidas: ${syncStats['totalFailed']}");
+
+    // 5. Mostrar operaciones de INVENTORY ADJUSTMENT en la cola
+    final storageService = getIt<StorageService>();
+    final allOperations = storageService.getSyncQueue();
+    final inventoryOps = allOperations.where((op) => op.type == SyncOperationType.inventoryAdjustment).toList();
+
+    debugPrint("\n--- 🔍 OPERACIONES DE INVENTARIO EN SYNC QUEUE ---");
+    debugPrint("Total operaciones de inventario: ${inventoryOps.length}");
+
+    if (inventoryOps.isNotEmpty) {
+      for (var i = 0; i < inventoryOps.length; i++) {
+        final op = inventoryOps[i];
+        final timestamp = op.timestamp;
+
+        debugPrint("\n${i + 1}. Operación de Inventario:");
+        debugPrint("   ID: ${op.id}");
+        debugPrint("   Estado: ${op.status.name}");
+        debugPrint("   Timestamp: $timestamp (${timestamp.hour}:${timestamp.minute.toString().padLeft(2, '0')})");
+        debugPrint("   Reintentos: ${op.retryCount}");
+        debugPrint("   Prioridad: ${op.priority}");
+
+        // Intentar extraer información del movimiento
+        try {
+          if (op.data['movement'] != null) {
+            final movementData = op.data['movement'];
+            if (movementData is Map) {
+              debugPrint("   Movement ID: ${movementData['id']}");
+              debugPrint("   Descripción: ${movementData['description']}");
+
+              if (movementData['items'] != null && movementData['items'] is List) {
+                final items = movementData['items'] as List;
+                debugPrint("   Items: ${items.length}");
+
+                if (items.isNotEmpty) {
+                  final firstItem = items.first;
+                  debugPrint("   Primer Item:");
+                  debugPrint("     - Producto: ${firstItem['productName']}");
+                  debugPrint("     - SKU: ${firstItem['sku']}");
+                  debugPrint("     - ProductID: ${firstItem['productId']}");
+                  debugPrint("     - VariationID: ${firstItem['variationId'] ?? 'null'}");
+                }
+              }
+            }
+          }
+        } catch (e) {
+          debugPrint("   ⚠️ Error extrayendo datos: $e");
+        }
+      }
+    } else {
+      debugPrint("  ✅ No hay operaciones de inventario en la cola");
+    }
+
+    debugPrint("\n==================== FIN DIAGNÓSTICO ====================\n");
   }
 
   void dispose() {

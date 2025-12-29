@@ -56,6 +56,16 @@ class DialFloatingActionButton extends StatelessWidget {
                 ),
                 _buildOption(
                   context,
+                  icon: Icons.view_list_outlined,
+                  label: 'Catálogo de Productos',
+                  subtitle: 'Ver productos de base de datos local',
+                  onTap: () {
+                    Navigator.pop(context);
+                    Routes.navigateTo(context, Routes.productCatalog);
+                  },
+                ),
+                _buildOption(
+                  context,
                   icon: Icons.print,
                   label: 'Etiquetas',
                   subtitle: 'Imprimir etiquetas de productos',

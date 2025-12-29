@@ -26,6 +26,15 @@ class ProductRepository {
     debugPrint("[ProductRepository] Initialized (SWR Cache Mode).");
   }
 
+  /// Notifica a los listeners que un producto ha sido actualizado
+  /// (usado cuando se actualiza stock desde inventario u otras fuentes)
+  void notifyProductUpdate(Product product) {
+    if (!_productUpdateController.isClosed) {
+      _productUpdateController.add(product);
+      debugPrint("[ProductRepository] 📢 Notified product update: ${product.id} - ${product.name}");
+    }
+  }
+
   Future<Product?> getProductById(String productId, { bool forceApi = false, Duration ttlDuration = productDetailCacheTTL}) async {
     debugPrint("[ProductRepository.getProductById] Requesting ID: $productId (forceApi: $forceApi)");
     Product? cachedProduct;

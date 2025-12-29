@@ -16,7 +16,11 @@ class ProductConverterService {
   ProductOptimized productToOptimized(Product product) {
     // Extraer IDs de diccionarios
     final brandId = _getOrCreateBrandId(_extractBrandFromName(product.name));
-    final categoryId = _getOrCreateCategoryId(product.categoryNames?.first ?? 'Uncategorized');
+    final categoryId = _getOrCreateCategoryId(
+      (product.categoryNames != null && product.categoryNames!.isNotEmpty)
+        ? product.categoryNames!.first
+        : 'Uncategorized'
+    );
 
     // Parsear IDs
     final int productId = int.tryParse(product.id) ?? 0;
@@ -133,9 +137,39 @@ class ProductConverterService {
   }
 
   int _getOrCreateCategoryId(String categoryName) {
-    // TODO: Implementar CategoryDictionary cuando se agregue al modelo
-    // Por ahora retornar 0
-    return 0;
+    if (categoryName.isEmpty || categoryName == 'Uncategorized') return 0;
+
+    final categoryBox = _db.store.box<CategoryDictionary>();
+
+    // Buscar existente
+    final query = categoryBox.query(CategoryDictionary_.name.equals(categoryName)).build();
+    CategoryDictionary? category = query.findFirst();
+    query.close();
+
+    if (category != null) {
+      return category.id;
+    }
+
+    // ⚡ FIX: Intentar crear, pero manejar race condition
+    try {
+      // Crear nuevo
+      category = CategoryDictionary(name: categoryName, slug: _slugify(categoryName));
+      categoryBox.put(category);
+      return category.id;
+    } catch (e) {
+      // ⚡ FIX: Si falla (posible constraint violation por race condition),
+      // buscar de nuevo - otro thread pudo haber creado la categoría
+      final retryQuery = categoryBox.query(CategoryDictionary_.name.equals(categoryName)).build();
+      category = retryQuery.findFirst();
+      retryQuery.close();
+
+      if (category != null) {
+        return category.id;
+      }
+
+      // Si aún no existe, re-lanzar el error original
+      rethrow;
+    }
   }
 
   String _getBrandName(int brandId) {
@@ -148,8 +182,10 @@ class ProductConverterService {
 
   String _getCategoryName(int categoryId) {
     if (categoryId == 0) return 'Uncategorized';
-    // TODO: Implementar CategoryDictionary cuando se agregue al modelo
-    return 'Uncategorized';
+
+    final categoryBox = _db.store.box<CategoryDictionary>();
+    final category = categoryBox.get(categoryId);
+    return category?.name ?? 'Uncategorized';
   }
 
   static String _truncate(String text, int maxLength) {
@@ -185,5 +221,18 @@ class ProductConverterService {
     // Extraer marca del nombre (primer palabra generalmente)
     final parts = name.split(' ');
     return parts.isNotEmpty ? parts[0] : 'Unknown';
+  }
+
+  static String _slugify(String text) {
+    return text
+        .toLowerCase()
+        .replaceAll(RegExp(r'[áàäâ]'), 'a')
+        .replaceAll(RegExp(r'[éèëê]'), 'e')
+        .replaceAll(RegExp(r'[íìïî]'), 'i')
+        .replaceAll(RegExp(r'[óòöô]'), 'o')
+        .replaceAll(RegExp(r'[úùüû]'), 'u')
+        .replaceAll(RegExp(r'[ñ]'), 'n')
+        .replaceAll(RegExp(r'[^\w\s-]'), '')
+        .replaceAll(RegExp(r'[\s]+'), '-');
   }
 }

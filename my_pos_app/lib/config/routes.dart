@@ -12,9 +12,9 @@ import '../screens/scanner_screen.dart';
 import '../screens/settings_screen.dart';
 import '../screens/splash_screen.dart';
 import '../screens/thermal_printing_screen.dart';
-// --- INICIO DE CORRECCIÓN ---
-import '../screens/customer_search_screen.dart'; // Importar la nueva pantalla
-// --- FIN DE CORRECCIÓN ---
+import '../screens/customer_search_screen.dart';
+import '../screens/product_catalog_screen.dart';
+import '../screens/product_detail_screen.dart';
 
 
 class Routes {
@@ -23,15 +23,15 @@ class Routes {
   static const String order = '/order';
   static const String settings = '/settings';
   static const String customerEdit = '/customer/edit';
-  // --- INICIO DE CORRECCIÓN ---
-  static const String customerSearch = '/customer/search'; // Añadir la nueva ruta
-  // --- FIN DE CORRECCIÓN ---
+  static const String customerSearch = '/customer/search';
   static const String inventory = '/inventory';
   static const String inventoryAdjustmentForm = '/inventory/adjustment/form';
   static const String inventoryCsvImport = '/inventory/import/csv';
   static const String labelPrinting = '/labels/print';
   static const String labelSettings = '/labels/settings';
   static const String thermalPrinting = '/labels/thermal_print';
+  static const String productCatalog = '/catalog';
+  static const String productDetail = '/catalog/product';
 
   static Map<String, WidgetBuilder> getRoutes() {
     return {
@@ -40,9 +40,7 @@ class Routes {
       order: (context) => const OrderScreen(),
       settings: (context) => const SettingsScreen(),
       customerEdit: (context) => const CustomerEditScreen(),
-      // --- INICIO DE CORRECCIÓN ---
-      customerSearch: (context) => const CustomerSearchScreen(), // Registrar la nueva ruta
-      // --- FIN DE CORRECCIÓN ---
+      customerSearch: (context) => const CustomerSearchScreen(),
       inventory: (context) => const InventoryScreen(),
       labelPrinting: (context) => const LabelPrintingScreen(),
       labelSettings: (context) => const LabelSettingsScreen(),
@@ -54,6 +52,14 @@ class Routes {
       inventoryAdjustmentForm: (context) {
         final args = ModalRoute.of(context)?.settings.arguments as InventoryAdjustmentFormScreenArguments?;
         return InventoryAdjustmentFormScreen(arguments: args);
+      },
+      productCatalog: (context) {
+        final args = ModalRoute.of(context)?.settings.arguments as CatalogScreenArguments?;
+        return ProductCatalogScreen(arguments: args);
+      },
+      productDetail: (context) {
+        final productId = ModalRoute.of(context)!.settings.arguments as String;
+        return ProductDetailScreen(productId: productId);
       },
     };
   }

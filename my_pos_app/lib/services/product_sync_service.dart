@@ -48,6 +48,8 @@ class ProductSyncService {
       // Paso 1: Obtener total de productos
       onProgress(0, 0, 'Consultando catálogo...');
 
+      debugPrint('[ProductSync] 📡 Using MyPOS Plugin API (now includes categories)');
+
       final firstBatchResponse = await _wooService.searchProducts(
         '',  // query vacío para obtener todos
         page: 1,

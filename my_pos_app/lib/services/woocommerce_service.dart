@@ -604,6 +604,37 @@ class WooCommerceService {
     }
   }
 
+  /// Busca productos usando SIEMPRE la API estándar de WooCommerce (NO el plugin)
+  /// Este método se usa para sincronización completa porque incluye categorías
+  Future<Map<String, dynamic>> searchProductsWithStandardApi(String query, {int limit = 20, int page = 1, bool searchOnlyAvailable = false}) async {
+    if (!await _connectivityService.checkConnectivity()) throw NetworkException("Sin conexión para buscar producto.");
+
+    try {
+      final dio = await _getDioClient();
+      final response = await dio.get('wp-json/wc/v3/products', queryParameters: {
+        'search': query.trim(),
+        'per_page': limit,
+        'page': page,
+        'status': 'publish',
+        if (searchOnlyAvailable) 'stock_status': 'instock'
+      });
+
+      final data = _tryParseResponseData(response);
+      if (data is List) {
+        final products = data.whereType<Map<String, dynamic>>().map((item) => Product.fromJson(item)).toList();
+        final int totalProducts = int.tryParse(response.headers.value('X-WP-Total') ?? '0') ?? 0;
+        final int totalPages = int.tryParse(response.headers.value('X-WP-TotalPages') ?? '0') ?? 0;
+
+        debugPrint('[WooCommerceService] ✅ Standard API returned ${products.length} products with categories');
+        return {'products': products, 'total_products': totalProducts, 'total_pages': totalPages};
+      }
+      throw InvalidDataException("Respuesta inesperada del servidor al buscar productos.");
+    } catch (e) {
+      if(e is ApiException) rethrow;
+      throw ApiException("Error buscando productos con API estándar: $e");
+    }
+  }
+
   Future<String> getProductById(String productId, {bool useCompute = false, bool includeParent = true}) async {
     if (!await _connectivityService.checkConnectivity()) throw NetworkException("Sin conexión para obtener producto.");
     final dio = await _getDioClient();
@@ -989,7 +1020,42 @@ class WooCommerceService {
       final dio = await _getDioClient();
       final response = await dio.get('wp-json/mypos/v1/inventory-history');
       final data = _tryParseResponseData(response);
+
+      // 🔍 DEBUG DETALLADO: Loggear TODO lo que devuelve el servidor
+      debugPrint("\n========== 🔍 INVENTORY HISTORY FROM SERVER ==========");
+      debugPrint("[WooCommerceService] Received ${data is List ? data.length : 0} movements from server");
+
       if (data is List) {
+        debugPrint("[WooCommerceService] ✅ Response is a valid List");
+        debugPrint("[WooCommerceService] Total movements: ${data.length}");
+
+        // Loggear los primeros 10 movement IDs y descripciones
+        debugPrint("\n--- 📋 First 10 Movement IDs from Server ---");
+        for (var i = 0; i < (data.length > 10 ? 10 : data.length); i++) {
+          final json = data[i];
+          if (json is Map) {
+            final id = json['id'] ?? 'NO_ID';
+            final desc = json['description'] ?? 'NO_DESC';
+            final date = json['date'] ?? 'NO_DATE';
+            final itemsCount = (json['items'] is List) ? (json['items'] as List).length : 0;
+            debugPrint("  ${i + 1}. ID: $id");
+            debugPrint("     Date: $date");
+            debugPrint("     Desc: $desc");
+            debugPrint("     Items: $itemsCount");
+
+            // Loggear el primer item de cada movimiento
+            if (json['items'] is List && (json['items'] as List).isNotEmpty) {
+              final firstItem = (json['items'] as List).first;
+              if (firstItem is Map) {
+                debugPrint("     First Item: ${firstItem['productName']} (SKU: ${firstItem['sku']}, Qty: ${firstItem['quantityChanged']})");
+              }
+            }
+            debugPrint("");
+          }
+        }
+
+        debugPrint("========== END INVENTORY HISTORY ==========\n");
+
         return data.map((json) => InventoryMovement.fromJson(json)).toList();
       }
       throw InvalidDataException("Respuesta inesperada obteniendo el historial de inventario.");
@@ -1002,11 +1068,41 @@ class WooCommerceService {
   Future<void> submitInventoryAdjustment(InventoryMovement movement) async {
     if (!await _connectivityService.checkConnectivity()) throw NetworkException("Sin conexión.");
     if (connectionMode != 'plugin') throw ApiException("El ajuste de inventario solo está soportada en modo plugin.");
+
+    debugPrint("[WooCommerceService] Sending inventory adjustment to server:");
+    debugPrint("  Movement ID: ${movement.id}");
+    debugPrint("  Description: ${movement.description}");
+
+    // ✅ DEBUG: Log del JSON que se va a enviar
+    final movementJson = movement.toJson();
+    debugPrint("  JSON to send: $movementJson");
+
     try {
       final dio = await _getDioClient();
-      await dio.post('wp-json/mypos/v1/inventory-adjustment', data: {'movement': movement.toJson()});
+      debugPrint("[WooCommerceService] 🌐 POST Request starting...");
+      debugPrint("  Endpoint: wp-json/mypos/v1/inventory-adjustment");
+      debugPrint("  Payload size: ${movementJson.toString().length} characters");
+
+      final response = await dio.post('wp-json/mypos/v1/inventory-adjustment', data: {'movement': movementJson});
+
+      debugPrint("[WooCommerceService] ✅ Inventory adjustment sent successfully");
+      debugPrint("  Response status: ${response.statusCode}");
+      debugPrint("  Response data: ${response.data}");
     } on DioException catch (e) {
+      debugPrint("[WooCommerceService] ❌ DioException sending inventory adjustment");
+      debugPrint("  Type: ${e.type}");
+      debugPrint("  Message: ${e.message}");
+      debugPrint("  Status code: ${e.response?.statusCode}");
+      debugPrint("  Response data: ${e.response?.data}");
       _handleDioError(e, "enviar ajuste de inventario", throwException: true);
+    } catch (e, stackTrace) {
+      debugPrint("[WooCommerceService] ❌ UNEXPECTED ERROR sending inventory adjustment");
+      debugPrint("  Error type: ${e.runtimeType}");
+      debugPrint("  Error: $e");
+      debugPrint("  Stack trace: $stackTrace");
+      rethrow;
+    } finally {
+      debugPrint("[WooCommerceService] 🏁 submitInventoryAdjustment completed (success or error)");
     }
   }
 

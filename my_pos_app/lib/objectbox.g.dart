@@ -665,6 +665,31 @@ final _entities = <obx_int.ModelEntity>[
             flags: 0)
       ],
       relations: <obx_int.ModelRelation>[],
+      backlinks: <obx_int.ModelBacklink>[]),
+  obx_int.ModelEntity(
+      id: const obx_int.IdUid(11, 8037576150524811474),
+      name: 'CategoryDictionary',
+      lastPropertyId: const obx_int.IdUid(3, 4364925264795627565),
+      flags: 0,
+      properties: <obx_int.ModelProperty>[
+        obx_int.ModelProperty(
+            id: const obx_int.IdUid(1, 4483010983306660671),
+            name: 'id',
+            type: 6,
+            flags: 1),
+        obx_int.ModelProperty(
+            id: const obx_int.IdUid(2, 3488189533965093236),
+            name: 'name',
+            type: 9,
+            flags: 2080,
+            indexId: const obx_int.IdUid(23, 2458770534308670138)),
+        obx_int.ModelProperty(
+            id: const obx_int.IdUid(3, 4364925264795627565),
+            name: 'slug',
+            type: 9,
+            flags: 0)
+      ],
+      relations: <obx_int.ModelRelation>[],
       backlinks: <obx_int.ModelBacklink>[])
 ];
 
@@ -703,8 +728,8 @@ Future<obx.Store> openStore(
 obx_int.ModelDefinition getObjectBoxModel() {
   final model = obx_int.ModelInfo(
       entities: _entities,
-      lastEntityId: const obx_int.IdUid(10, 4948770177190922620),
-      lastIndexId: const obx_int.IdUid(22, 3604040165149682629),
+      lastEntityId: const obx_int.IdUid(11, 8037576150524811474),
+      lastIndexId: const obx_int.IdUid(23, 2458770534308670138),
       lastRelationId: const obx_int.IdUid(0, 0),
       lastSequenceId: const obx_int.IdUid(0, 0),
       retiredEntityUids: const [],
@@ -1403,6 +1428,39 @@ obx_int.ModelDefinition getObjectBoxModel() {
                 const fb.BoolReader().vTableGet(buffer, rootOffset, 34, false);
 
           return object;
+        }),
+    CategoryDictionary: obx_int.EntityDefinition<CategoryDictionary>(
+        model: _entities[10],
+        toOneRelations: (CategoryDictionary object) => [],
+        toManyRelations: (CategoryDictionary object) => {},
+        getId: (CategoryDictionary object) => object.id,
+        setId: (CategoryDictionary object, int id) {
+          object.id = id;
+        },
+        objectToFB: (CategoryDictionary object, fb.Builder fbb) {
+          final nameOffset = fbb.writeString(object.name);
+          final slugOffset =
+              object.slug == null ? null : fbb.writeString(object.slug!);
+          fbb.startTable(4);
+          fbb.addInt64(0, object.id);
+          fbb.addOffset(1, nameOffset);
+          fbb.addOffset(2, slugOffset);
+          fbb.finish(fbb.endTable());
+          return object.id;
+        },
+        objectFromFB: (obx.Store store, ByteData fbData) {
+          final buffer = fb.BufferContext(fbData);
+          final rootOffset = buffer.derefObject(0);
+          final idParam =
+              const fb.Int64Reader().vTableGet(buffer, rootOffset, 4, 0);
+          final nameParam = const fb.StringReader(asciiOptimization: true)
+              .vTableGet(buffer, rootOffset, 6, '');
+          final slugParam = const fb.StringReader(asciiOptimization: true)
+              .vTableGetNullable(buffer, rootOffset, 8);
+          final object =
+              CategoryDictionary(id: idParam, name: nameParam, slug: slugParam);
+
+          return object;
         })
   };
 
@@ -1864,4 +1922,19 @@ class OrderCompact_ {
   /// See [OrderCompact.isPaid].
   static final isPaid =
       obx.QueryBooleanProperty<OrderCompact>(_entities[9].properties[15]);
+}
+
+/// [CategoryDictionary] entity fields to define ObjectBox queries.
+class CategoryDictionary_ {
+  /// See [CategoryDictionary.id].
+  static final id =
+      obx.QueryIntegerProperty<CategoryDictionary>(_entities[10].properties[0]);
+
+  /// See [CategoryDictionary.name].
+  static final name =
+      obx.QueryStringProperty<CategoryDictionary>(_entities[10].properties[1]);
+
+  /// See [CategoryDictionary.slug].
+  static final slug =
+      obx.QueryStringProperty<CategoryDictionary>(_entities[10].properties[2]);
 }

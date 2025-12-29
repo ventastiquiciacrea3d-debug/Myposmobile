@@ -169,6 +169,18 @@ class Product extends HiveObject {
       }
     }
 
+    // Parsear categorías del plugin
+    List<String>? categoryNamesFromPlugin;
+    if (json['categories'] is List) {
+      categoryNamesFromPlugin = (json['categories'] as List)
+          .map((cat) => cat is Map ? cat['name'] as String? ?? '' : '')
+          .where((name) => name.isNotEmpty)
+          .toList();
+
+      if (categoryNamesFromPlugin.isNotEmpty) {
+        debugPrint('[Product._fromPluginJson] Product "${json['name']}" has categories from plugin: $categoryNamesFromPlugin');
+      }
+    }
 
     return Product(
       id: json['id']?.toString() ?? '',
@@ -189,7 +201,7 @@ class Product extends HiveObject {
       attributes: parsedAttributes,
       fullAttributesWithOptions: parsedFullAttributesWithOptions,
       variations: (json['variations'] as List<dynamic>?)?.map((e) => e as int).toList(),
-      categoryNames: null,
+      categoryNames: categoryNamesFromPlugin,
       dateModified: null,
       description: null,
       shortDescription: null,
@@ -297,7 +309,19 @@ class Product extends HiveObject {
     }
     if (nameApi.isEmpty) nameApi = "Producto (ID: $idApi)";
 
+    // Debug: Log categories from API
+    if (json['categories'] != null) {
+      debugPrint('[Product.fromWooCommerceJson] Product "$nameApi" raw categories: ${json['categories']}');
+    }
+
     List<String> categoryNamesApi = (json['categories'] as List?)?.map((cat) => cat is Map ? cat['name'] as String? ?? '' : '').where((name) => name.isNotEmpty).toList() ?? [];
+
+    // Debug: Log parsed categories
+    if (categoryNamesApi.isNotEmpty) {
+      debugPrint('[Product.fromWooCommerceJson] Product "$nameApi" parsed categories: $categoryNamesApi');
+    } else {
+      debugPrint('[Product.fromWooCommerceJson] Product "$nameApi" has NO categories (parsed empty)');
+    }
     String? barcodeApi;
     if (json['meta_data'] is List) {
       final meta = (json['meta_data'] as List).firstWhereOrNull( (m) => m is Map && (m['key'] == '_barcode' || m['key'] == 'barcode' || m['key'] == '_mpbm_barcode') && m['value'] != null && m['value'].toString().isNotEmpty );

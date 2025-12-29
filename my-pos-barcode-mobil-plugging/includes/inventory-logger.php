@@ -33,8 +33,10 @@ class MPBM_Inventory_Logger {
         $stock_after_val = is_numeric($stock_after) ? (int)$stock_after : $product->get_stock_quantity();
         $stock_before_val = is_numeric($stock_before) ? (int)$stock_before : ($stock_after_val - $quantity_changed);
 
+        $final_movement_id = $movement_id ?: wp_generate_uuid4();
+
         $wpdb->insert($table_name, [
-            'movement_id' => $movement_id ?: wp_generate_uuid4(),
+            'movement_id' => $final_movement_id,
             'product_id' => $product->is_type('variation') ? $product->get_parent_id() : $product->get_id(),
             'variation_id' => $product->is_type('variation') ? $product->get_id() : 0,
             'product_name' => $product->get_name(), 'sku' => $product->get_sku(),
@@ -43,6 +45,13 @@ class MPBM_Inventory_Logger {
             'description' => sanitize_text_field($description), 'user_id' => $user_id,
             'log_date' => current_time('mysql'),
         ]);
+
+        // 🔍 DEBUG: Confirmar que se guardó
+        if ($wpdb->insert_id > 0) {
+            error_log("[MPBM] ✅ Inventory movement saved to DB: movement_id=$final_movement_id, product={$product->get_name()}, sku={$product->get_sku()}, qty=$quantity_changed");
+        } else {
+            error_log("[MPBM] ❌ Failed to save inventory movement: " . $wpdb->last_error);
+        }
     }
 
     /**

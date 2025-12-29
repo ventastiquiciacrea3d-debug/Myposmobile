@@ -96,6 +96,35 @@ class SyncManager extends ChangeNotifier {
     }
   }
 
+  /// ✅ FIX V4: Crear copia profunda de Map para evitar errores de Hive
+  /// Resuelve: "type '_Map<dynamic, dynamic>' is not a subtype of type 'Map<String, dynamic>'"
+  Map<String, dynamic> _deepCopyMap(Map<String, dynamic> original) {
+    final Map<String, dynamic> copy = {};
+
+    for (final entry in original.entries) {
+      final key = entry.key;
+      final value = entry.value;
+
+      if (value is Map) {
+        // Recursivamente copiar Maps anidados
+        copy[key] = _deepCopyMap(Map<String, dynamic>.from(value));
+      } else if (value is List) {
+        // Copiar listas y sus elementos
+        copy[key] = value.map((item) {
+          if (item is Map) {
+            return _deepCopyMap(Map<String, dynamic>.from(item));
+          }
+          return item;
+        }).toList();
+      } else {
+        // Valores primitivos se copian directamente
+        copy[key] = value;
+      }
+    }
+
+    return copy;
+  }
+
   /// ✓ PROPUESTA 2: Agregar operación con soporte de prioridad e idempotency
   Future<void> addOperation(
       SyncOperationType type,
@@ -116,9 +145,12 @@ class SyncManager extends ChangeNotifier {
       return;
     }
 
+    // ✅ FIX V4: Crear copia profunda de los datos para evitar errores de Hive
+    final dataCopy = _deepCopyMap(data);
+
     final operation = SyncOperation(
       type: type,
-      data: data,
+      data: dataCopy,
       priority: priority,
       idempotencyKey: effectiveIdempotencyKey,
     );
@@ -203,9 +235,14 @@ class SyncManager extends ChangeNotifier {
 
       // ✓ PROPUESTA 2: Verificar si debe saltar esta operación (backoff)
       if (!operation.canRetryNow()) {
-        final remaining = operation.nextRetryAfter!.difference(DateTime.now());
-        debugPrint("[SyncManager] ⏭️ Skipping operation ${operation.id} (${operation.type.name}). "
-            "Backoff active. Retry in ${remaining.inSeconds}s.");
+        if (operation.nextRetryAfter != null) {
+          final remaining = operation.nextRetryAfter!.difference(DateTime.now());
+          debugPrint("[SyncManager] ⏭️ Skipping operation ${operation.id} (${operation.type.name}). "
+              "Backoff active. Retry in ${remaining.inSeconds}s.");
+        } else {
+          debugPrint("[SyncManager] ⏭️ Skipping operation ${operation.id} (${operation.type.name}). "
+              "Operation is in failed state.");
+        }
         skippedCount++;
         continue;
       }
@@ -349,13 +386,22 @@ class SyncManager extends ChangeNotifier {
   Future<void> _processOperation(SyncOperation operation) async {
     debugPrint("[SyncManager] 🔧 Processing operation ${operation.id} of type ${operation.type.name}");
 
+    // ✅ FIX V4: Convertir operation.data a Map<String, dynamic> para evitar errores de tipo
+    // Hive devuelve Map<dynamic, dynamic> que causa "type '_Map<dynamic, dynamic>' is not a subtype"
+    final Map<String, dynamic> data = Map<String, dynamic>.from(operation.data);
+
     switch (operation.type) {
       case SyncOperationType.createOrder:
-        final order = Order.fromJson(operation.data['order']);
+        // ✅ FIX V4: Convertir el mapa anidado 'order' también
+        final orderData = data['order'];
+        if (orderData is! Map) {
+          throw Exception("operation.data['order'] no es un Map válido");
+        }
+        final order = Order.fromJson(Map<String, dynamic>.from(orderData as Map));
         final serverId = await _wooCommerceService.createOrderAPI(order);
 
         if (serverId != null) {
-          final localId = operation.data['localId'];
+          final localId = data['localId'];
           if (localId != null) {
             await _storageService.removePendingOrder(localId);
             debugPrint("[SyncManager] ✓ Pending order $localId removed after successful sync. Server ID: $serverId");
@@ -367,8 +413,8 @@ class SyncManager extends ChangeNotifier {
 
       case SyncOperationType.updateOrderStatus:
         await _wooCommerceService.updateOrderStatus(
-          operation.data['orderId'],
-          operation.data['newStatus'],
+          data['orderId'],
+          data['newStatus'],
         );
         break;
 
@@ -490,7 +536,15 @@ class SyncManager extends ChangeNotifier {
     debugPrint("[SyncManager] 🔧 Processing inventory adjustment: ${operation.id}");
 
     try {
-      final movement = InventoryMovement.fromJson(operation.data['movement']);
+      // ✅ FIX V4: Convertir operation.data a Map<String, dynamic> para evitar errores de tipo
+      final Map<String, dynamic> data = Map<String, dynamic>.from(operation.data);
+
+      // ✅ FIX V4: Convertir el mapa anidado 'movement' también
+      final movementData = data['movement'];
+      if (movementData is! Map) {
+        throw Exception("operation.data['movement'] no es un Map válido");
+      }
+      final movement = InventoryMovement.fromJson(Map<String, dynamic>.from(movementData as Map));
 
       debugPrint("[SyncManager] Sending full inventory adjustment to WooCommerce (History + Stock)...");
 

@@ -289,13 +289,46 @@ class _AddToCartDialogState extends ConsumerState<AddToCartDialog> {
   void _updateDisplayData() {
     if (!mounted) return;
     final productToDisplay = _selectedVariationProduct ?? _product;
+
+    // ✅ FIX: Calcular stock disponible real (descontando lo que ya está en el pedido)
+    int stockReal = productToDisplay?.stockQuantity ?? (productToDisplay?.manageStock ?? false ? 0 : -1);
+
+    if (stockReal != -1 && productToDisplay != null) {
+      // Obtener cantidad ya en el pedido actual
+      final orderState = ref.read(currentOrderProvider);
+      if (orderState.hasValue) {
+        final currentOrder = orderState.value?.order;
+        if (currentOrder != null) {
+          final uniqueItemId = productToDisplay.isVariation
+              ? '${productToDisplay.parentId}_${productToDisplay.id}'
+              : productToDisplay.id;
+
+          final existingItem = currentOrder.items.firstWhereOrNull(
+            (item) {
+              final itemUniqueId = item.variationId != null
+                  ? '${item.productId}_${item.variationId}'
+                  : item.productId;
+              return itemUniqueId == uniqueItemId;
+            },
+          );
+
+          if (existingItem != null) {
+            // Restar cantidad ya en pedido del stock disponible
+            stockReal = (stockReal - existingItem.quantity).clamp(0, stockReal);
+            debugPrint("[AddToCartDialog] 📦 Stock apartado: ${existingItem.quantity} unidades en pedido");
+            debugPrint("[AddToCartDialog] ✅ Stock disponible real: $stockReal unidades");
+          }
+        }
+      }
+    }
+
     setState(() {
       _currentDisplayPrice = productToDisplay?.displayPrice ?? 0.0;
       _currentRegularPrice = productToDisplay?.regularPrice;
       _currentOnSale = productToDisplay?.onSale ?? false;
       _currentDisplayImageUrl = productToDisplay?.displayImageUrl;
       _currentIsAvailable = productToDisplay?.isAvailable ?? false;
-      _currentStockQuantity = productToDisplay?.stockQuantity ?? (productToDisplay?.manageStock ?? false ? 0 : -1);
+      _currentStockQuantity = stockReal; // ✅ Usar stock real (ya descontado)
       _currentSku = productToDisplay?.sku ?? '';
     });
   }
@@ -324,7 +357,7 @@ class _AddToCartDialogState extends ConsumerState<AddToCartDialog> {
     }
   }
 
-  void _addToCart() {
+  Future<void> _addToCart() async {
     if (!mounted) return;
     final orderNotifier = ref.read(currentOrderProvider.notifier);
     final productToAdd = _selectedVariationProduct ?? _product;
@@ -347,16 +380,218 @@ class _AddToCartDialogState extends ConsumerState<AddToCartDialog> {
       }).toList();
     }
 
-    orderNotifier.addProduct(
-      productToAdd,
-      _selectedQuantity,
-      explicitAttributes: attributesForOrder,
-    );
+    try {
+      await orderNotifier.addProduct(
+        productToAdd,
+        _selectedQuantity,
+        explicitAttributes: attributesForOrder,
+      );
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('"${productToAdd.name}" x$_selectedQuantity agregado.'), duration: const Duration(seconds: 2), backgroundColor: Colors.green.shade700),
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('"${productToAdd.name}" x$_selectedQuantity agregado.'), duration: const Duration(seconds: 2), backgroundColor: Colors.green.shade700),
+        );
+        Navigator.of(context).pop();
+      }
+    } catch (e) {
+      if (!mounted) return;
+
+      final errorMessage = e.toString();
+
+      // ✅ FIX: Detectar error de stock insuficiente y mostrar diálogo con opciones
+      if (errorMessage.contains('Stock insuficiente')) {
+        // Extraer información del error: "Stock insuficiente para 'Nombre'. Disponible: X. Solicitado en total: Y"
+        final RegExp regExp = RegExp(r"Disponible: (\d+)\. Solicitado en total: (\d+)");
+        final match = regExp.firstMatch(errorMessage);
+
+        int? stockDisponible;
+        int? stockSolicitado;
+
+        if (match != null) {
+          stockDisponible = int.tryParse(match.group(1) ?? '');
+          stockSolicitado = int.tryParse(match.group(2) ?? '');
+        }
+
+        await _showStockInsuficienteDialog(
+          productToAdd,
+          stockDisponible,
+          stockSolicitado,
+          attributesForOrder,
+        );
+      } else {
+        // Otro tipo de error
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(errorMessage.replaceAll('Exception: ', '')),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _showStockInsuficienteDialog(
+    app_product.Product product,
+    int? stockDisponible,
+    int? stockSolicitado,
+    List<Map<String, String>>? attributesForOrder,
+  ) async {
+    if (!mounted) return;
+
+    final orderNotifier = ref.read(currentOrderProvider.notifier);
+    final orderState = ref.read(currentOrderProvider);
+
+    // Calcular cantidad actual en el carrito
+    int cantidadEnCarrito = 0;
+    if (orderState.hasValue) {
+      final currentOrder = orderState.value?.order;
+      if (currentOrder != null) {
+        final uniqueItemId = product.isVariation
+            ? '${product.parentId}_${product.id}'
+            : product.id;
+
+        final existingItem = currentOrder.items.firstWhereOrNull(
+          (item) {
+            final itemUniqueId = item.variationId != null
+                ? '${item.productId}_${item.variationId}'
+                : item.productId;
+            return itemUniqueId == uniqueItemId;
+          },
+        );
+
+        if (existingItem != null) {
+          cantidadEnCarrito = existingItem.quantity;
+        }
+      }
+    }
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+        title: Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: Colors.orange.shade700, size: 28),
+            const SizedBox(width: 8),
+            const Expanded(child: Text('Stock Insuficiente')),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'No hay suficiente stock para "${product.name}"',
+              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
+            ),
+            const SizedBox(height: 16),
+            if (stockDisponible != null && stockSolicitado != null) ...[
+              _buildInfoRow('Stock disponible:', '$stockDisponible unidades'),
+              const SizedBox(height: 8),
+              _buildInfoRow('Ya en pedido:', '$cantidadEnCarrito unidades'),
+              const SizedBox(height: 8),
+              _buildInfoRow('Intentando agregar:', '${stockSolicitado - cantidadEnCarrito} unidades'),
+              const SizedBox(height: 8),
+              _buildInfoRow('Total solicitado:', '$stockSolicitado unidades', isError: true),
+            ] else ...[
+              Text('Stock disponible: ${stockDisponible ?? "Desconocido"}'),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('CANCELAR'),
+          ),
+          if (cantidadEnCarrito > 0)
+            TextButton(
+              onPressed: () async {
+                // Eliminar producto del pedido
+                final uniqueItemId = product.isVariation
+                    ? '${product.parentId}_${product.id}'
+                    : product.id;
+
+                await orderNotifier.removeItem(uniqueItemId);
+
+                if (mounted) {
+                  Navigator.of(dialogContext).pop();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Producto eliminado del pedido'),
+                      backgroundColor: Colors.orange,
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                }
+              },
+              child: const Text('ELIMINAR DEL PEDIDO'),
+            ),
+          if (stockDisponible != null && stockDisponible > cantidadEnCarrito)
+            ElevatedButton(
+              onPressed: () async {
+                // Ajustar a máximo disponible
+                final cantidadParaAgregar = stockDisponible - cantidadEnCarrito;
+
+                try {
+                  await orderNotifier.addProduct(
+                    product,
+                    cantidadParaAgregar,
+                    explicitAttributes: attributesForOrder,
+                  );
+
+                  if (mounted) {
+                    Navigator.of(dialogContext).pop();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Ajustado a máximo disponible: ${stockDisponible} unidades'),
+                        backgroundColor: Colors.green.shade700,
+                        duration: const Duration(seconds: 2),
+                      ),
+                    );
+                    Navigator.of(context).pop(); // Cerrar AddToCartDialog
+                  }
+                } catch (e) {
+                  if (mounted) {
+                    Navigator.of(dialogContext).pop();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Error: ${e.toString()}'),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                  }
+                }
+              },
+              child: Text('AJUSTAR A MÁXIMO ($stockDisponible)'),
+            ),
+        ],
+      ),
     );
-    Navigator.of(context).pop();
+  }
+
+  Widget _buildInfoRow(String label, String value, {bool isError = false}) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            color: Colors.grey.shade700,
+            fontSize: 14,
+          ),
+        ),
+        Text(
+          value,
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 14,
+            color: isError ? Colors.red.shade700 : Colors.black87,
+          ),
+        ),
+      ],
+    );
   }
 
   @override

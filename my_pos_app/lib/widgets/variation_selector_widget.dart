@@ -84,7 +84,7 @@ class _VariationSelectorWidgetState
       // ✅ PASO 2: Obtener variaciones (SOLO LOCAL)
       final variations = await _productRepository.getAllVariations(
         widget.productId,
-        forceApi: false, // ← SOLO LOCAL
+        onlyInStock: false, // ← SOLO LOCAL
       );
 
       if (!mounted) return;
@@ -222,12 +222,12 @@ class _VariationListTile extends StatelessWidget {
   });
 
   String _getVariationDisplayName() {
-    if (variation.attributes.isEmpty) {
+    if (variation.attributes == null || variation.attributes!.isEmpty) {
       return variation.name;
     }
 
-    final attributeNames = variation.attributes
-        .map((attr) => "${attr.name}: ${attr.option}")
+    final attributeNames = variation.attributes!
+        .map((attr) => "${attr['name']}: ${attr['option']}")
         .join(", ");
 
     return attributeNames.isNotEmpty ? attributeNames : variation.name;

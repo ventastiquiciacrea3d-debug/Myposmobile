@@ -519,7 +519,8 @@ class CurrentOrder extends _$CurrentOrder {
               throw Exception("No se pudo verificar el stock de '${item.name}'.");
             }
             if (quantity > availableStock) {
-              throw Exception("Stock insuficiente ($availableStock) para '${item.name}'.");
+              // ✅ FIX: Formato estandarizado para que el diálogo pueda parsearlo
+              throw Exception("Stock insuficiente para '${item.name}'. Disponible: $availableStock. Solicitado en total: $quantity");
             }
           }
 

@@ -212,13 +212,21 @@ class StorageService {
   Future<void> updateSyncOperation(SyncOperation operation) async {
     final box = _syncQueueBox; if (!_isBoxReady(box, hiveSyncQueueBoxName)) return;
 
-    // ✅ FIX: Simplemente actualizar la operación existente sin eliminar
-    // Ya que la instancia está vinculada a Hive, solo necesitamos hacer put
+    // ✅ FIX V4: Usar save() si el objeto está vinculado a Hive, o put() si no lo está
+    // Esto evita el error "same instance with two different keys"
     try {
-      await box!.put(operation.id, operation);
-      debugPrint('[StorageService] ✅ Updated sync operation: ${operation.id}');
+      if (operation.isInBox) {
+        // El objeto ya está vinculado a Hive, usar save() para actualizar
+        await operation.save();
+        debugPrint('[StorageService] ✅ Updated sync operation (save): ${operation.id}');
+      } else {
+        // El objeto no está vinculado, usar put() para agregarlo
+        await box!.put(operation.id, operation);
+        debugPrint('[StorageService] ✅ Updated sync operation (put): ${operation.id}');
+      }
     } catch (e) {
       debugPrint('[StorageService] ❌ Error updating sync operation: $e');
+      debugPrint('[StorageService] ❌ Operation details: id=${operation.id}, isInBox=${operation.isInBox}');
     }
   }
 
@@ -389,6 +397,43 @@ class StorageService {
       return results.map((opt) => _converter!.optimizedToProduct(opt)).toList();
     } catch (e) {
       debugPrint("[StorageService.searchLocalProductsByNameOrSku] ❌ Error: $e");
+      return [];
+    }
+  }
+
+  /// Obtiene todos los productos de la base de datos local
+  /// Si [includeVariations] es true, retorna productos simples, variables Y variaciones
+  /// Si [includeVariations] es false, retorna solo productos padre (simples + variables)
+  Future<List<Product>> getAllProducts({bool includeVariations = true}) async {
+    if (_db == null || _converter == null) return [];
+
+    try {
+      final box = _db!.store.box<ProductOptimized>();
+
+      // Si se incluyen variaciones, obtener todos los productos
+      if (includeVariations) {
+        final allOptimized = box.getAll();
+        final products = allOptimized
+            .map((opt) => _converter!.optimizedToProduct(opt))
+            .toList();
+        debugPrint("[StorageService.getAllProducts] ✅ Retrieved ${products.length} products (with variations)");
+        return products;
+      }
+
+      // Si NO se incluyen variaciones, filtrar solo productos padre
+      final queryBuilder = box.query(
+        ProductOptimized_.parentId.equals(0)
+      );
+
+      final query = queryBuilder.build();
+      final results = query.find();
+      query.close();
+
+      final products = results.map((opt) => _converter!.optimizedToProduct(opt)).toList();
+      debugPrint("[StorageService.getAllProducts] ✅ Retrieved ${products.length} parent products (no variations)");
+      return products;
+    } catch (e) {
+      debugPrint("[StorageService.getAllProducts] ❌ Error: $e");
       return [];
     }
   }

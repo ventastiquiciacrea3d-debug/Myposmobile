@@ -322,7 +322,14 @@ function mpbm_get_inventory_history_callback(WP_REST_Request $request) {
     global $wpdb;
     $table_name = $wpdb->prefix . 'mpbm_inventory_log';
     $results = $wpdb->get_results("SELECT * FROM $table_name ORDER BY log_date DESC LIMIT 500", ARRAY_A);
-    
+
+    // 🔍 DEBUG: Log cuántos registros se encontraron en la base de datos
+    error_log("[MPBM] mpbm_get_inventory_history_callback: Found " . count($results) . " records in database");
+    if (!empty($results)) {
+        error_log("[MPBM] Latest movement_id: " . $results[0]['movement_id']);
+        error_log("[MPBM] Latest log_date: " . $results[0]['log_date']);
+    }
+
     if (empty($results)) {
         return new WP_REST_Response([], 200);
     }
@@ -355,27 +362,45 @@ function mpbm_get_inventory_history_callback(WP_REST_Request $request) {
             'stockAfter'      => is_numeric($row['stock_after']) ? (int)$row['stock_after'] : null,
         ];
     }
-    
+
+    // 🔍 DEBUG: Log cuántos movimientos únicos se van a devolver
+    $unique_movement_count = count($movements);
+    error_log("[MPBM] Returning $unique_movement_count unique movements to client");
+    if ($unique_movement_count > 0) {
+        $movement_ids = array_keys($movements);
+        error_log("[MPBM] First 5 movement IDs: " . implode(', ', array_slice($movement_ids, 0, 5)));
+    }
+
     return new WP_REST_Response(array_values($movements), 200);
 }
 
 function mpbm_submit_inventory_adjustment_callback(WP_REST_Request $request) {
     $movement_data = $request->get_param('movement');
     if (empty($movement_data) || !is_array($movement_data)) {
+        error_log("[MPBM] ❌ Invalid movement data received");
         return new WP_Error('bad_request', 'Datos de movimiento inválidos.', ['status' => 400]);
     }
-    
+
+    // 🔍 DEBUG: Log que se recibió la petición
+    error_log("[MPBM] 📥 Received inventory adjustment request");
+    error_log("[MPBM] Movement ID: " . ($movement_data['id'] ?? 'NO_ID'));
+    error_log("[MPBM] Type: " . ($movement_data['type'] ?? 'NO_TYPE'));
+    error_log("[MPBM] Items count: " . (isset($movement_data['items']) && is_array($movement_data['items']) ? count($movement_data['items']) : 0));
+
     // El user_id vendrá del token JWT si se implementa, sino se usa un admin por defecto
-    $user_id = $request->get_param('user_id') ?: 1; 
+    $user_id = $request->get_param('user_id') ?: 1;
 
     $logger = new MPBM_Inventory_Logger();
-    $success = $logger->log_batch_movement_from_api($movement_data, $user_id);
+    $result = $logger->log_batch_movement_from_api($movement_data, $user_id);
 
-    if ($success) {
-        return new WP_REST_Response(['status' => 'success', 'message' => 'Ajuste de inventario procesado.'], 200);
-    } else {
-        return new WP_Error('processing_error', 'No se pudieron procesar todos los ítems del ajuste.', ['status' => 500]);
+    // ✅ FIX CRÍTICO: Verificar si es WP_Error ANTES de evaluar como booleano
+    if (is_wp_error($result)) {
+        error_log("[MPBM] ❌ Error processing inventory adjustment: " . $result->get_error_message());
+        return $result; // Devolver el WP_Error directamente
     }
+
+    error_log("[MPBM] ✅ Inventory adjustment processed successfully");
+    return new WP_REST_Response(['status' => 'success', 'message' => 'Ajuste de inventario procesado.'], 200);
 }
 
 /**
@@ -604,14 +629,27 @@ function mpbm_get_batch_product_data(array $ids, bool $lightweight = false) {
             $image_id = $parent_image_ids[$p_data['parent_id']];
         }
         $image_url = $image_id ? wp_get_attachment_image_url($image_id, 'woocommerce_thumbnail') : null;
-        
+
         $price = (float)($p_data['price'] ?? 0);
         $regular_price = !empty($p_data['regular_price']) ? (float)$p_data['regular_price'] : $price;
         $sale_price = !empty($p_data['sale_price']) ? (float)$p_data['sale_price'] : null;
 
+        // Obtener categorías del producto
+        $category_terms = wp_get_post_terms($product_id, 'product_cat', ['fields' => 'all']);
+        $categories = [];
+        if (!is_wp_error($category_terms) && !empty($category_terms)) {
+            foreach ($category_terms as $term) {
+                $categories[] = [
+                    'id' => $term->term_id,
+                    'name' => $term->name,
+                    'slug' => $term->slug
+                ];
+            }
+        }
+
         $data = [
             'id' => (string)$product_id, 'name' => $p_data['name'], 'sku' => $p_data['sku'] ?? '',
-            'type' => $product_obj->get_type(), 'price' => $price, 
+            'type' => $product_obj->get_type(), 'price' => $price,
             'regular_price' => $regular_price, 'sale_price' => $sale_price,
             'on_sale' => $product_obj->is_on_sale(),
             'stock_quantity' => $p_data['stock_quantity'] !== null ? (int)$p_data['stock_quantity'] : null,
@@ -620,6 +658,7 @@ function mpbm_get_batch_product_data(array $ids, bool $lightweight = false) {
             'image' => $image_url ? ['src' => $image_url] : null,
             'parent_id' => (int)$p_data['parent_id'],
             'barcode' => $p_data['barcode'] ?: ($p_data['sku'] ?? ''),
+            'categories' => $categories,
             'source' => 'mypos_plugin_v1_search', 'attributes' => [], 'full_attributes_with_options' => []
         ];
 

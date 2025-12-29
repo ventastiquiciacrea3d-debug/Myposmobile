@@ -666,10 +666,36 @@
         }
       ],
       "relations": []
+    },
+    {
+      "id": "11:8037576150524811474",
+      "lastPropertyId": "3:4364925264795627565",
+      "name": "CategoryDictionary",
+      "properties": [
+        {
+          "id": "1:4483010983306660671",
+          "name": "id",
+          "type": 6,
+          "flags": 1
+        },
+        {
+          "id": "2:3488189533965093236",
+          "name": "name",
+          "type": 9,
+          "flags": 2080,
+          "indexId": "23:2458770534308670138"
+        },
+        {
+          "id": "3:4364925264795627565",
+          "name": "slug",
+          "type": 9
+        }
+      ],
+      "relations": []
     }
   ],
-  "lastEntityId": "10:4948770177190922620",
-  "lastIndexId": "22:3604040165149682629",
+  "lastEntityId": "11:8037576150524811474",
+  "lastIndexId": "23:2458770534308670138",
   "lastRelationId": "0:0",
   "lastSequenceId": "0:0",
   "modelVersion": 5,

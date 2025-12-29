@@ -540,4 +540,20 @@ class Scanner extends _$Scanner {
     await _stopCamera();
     debugPrint("[Scanner] Scanner reset complete");
   }
+
+  /// Limpia el estado de producto encontrado SIN reiniciar la cámara
+  /// Usado cuando el bottom sheet se cierra y queremos mantener la cámara activa
+  void clearProductFoundState() {
+    debugPrint("[Scanner] Clearing product found state (keeping camera active)");
+
+    state = state.copyWith(
+      viewState: ScannerViewState.scanning, // Volver a estado de escaneo
+      isProcessingBarcode: false,
+      scannedProduct: null,
+      errorMessage: null,
+      latestBarcodeCapture: null,
+    );
+    // ✅ NO se llama a _stopCamera() ni _startCamera()
+    // La cámara permanece activa y lista para escanear
+  }
 }

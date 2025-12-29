@@ -55,3 +55,23 @@ class AttributeValueDictionary {
     required this.value,
   });
 }
+
+/// Diccionario de Categorías
+/// Total estimado: ~1KB para 50 categorías
+@Entity()
+class CategoryDictionary {
+  @Id()
+  int id = 0;
+
+  @Index()
+  @Unique()
+  String name; // Electrónica, Ropa, Accesorios, etc.
+
+  String? slug; // electronica, ropa, accesorios
+
+  CategoryDictionary({
+    this.id = 0,
+    required this.name,
+    this.slug,
+  });
+}

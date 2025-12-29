@@ -4,7 +4,9 @@ import 'package:intl/intl.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../models/order.dart' show OrderItem;
+import '../../models/product.dart';
 import '../../providers/order_notifier.dart';
+import '../../providers/shared_providers.dart';
 import '../../widgets/quantity_selector.dart';
 
 class CurrentOrderItemCard extends ConsumerWidget {
@@ -33,6 +35,8 @@ class CurrentOrderItemCard extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final orderNotifier = ref.read(currentOrderProvider.notifier);
+    final currentOrderState = ref.watch(currentOrderProvider);
+    final productRepo = ref.watch(productRepositoryProvider);
 
     final bool isVariableProduct = item.productType == 'variation' || item.productType == 'variable';
     final String displayedName = item.name;
@@ -51,8 +55,95 @@ class CurrentOrderItemCard extends ConsumerWidget {
     final double lineTotalAfterIndividualDiscount = lineSubtotalBeforeManualDiscount - (item.individualDiscount ?? 0.0);
 
     final String itemSku = item.sku;
-    final bool manageStock = item.manageStock;
-    final int? stockQuantity = item.stockQuantity;
+
+    // ✅ FIX: Obtener stock actual del producto desde el repositorio
+    // Los campos manageStock y stockQuantity en OrderItem NO se persisten en Hive
+    // Por eso debemos buscar el producto actual para obtener el stock real
+    final String productIdToFetch = item.isVariation
+        ? item.variationId.toString()
+        : item.productId;
+
+    return FutureBuilder<Product?>(
+      future: productRepo.getProductById(productIdToFetch),
+      builder: (context, snapshot) {
+        // Valores por defecto si no hay datos
+        bool manageStock = false;
+        int? stockQuantityTotal;
+
+        if (snapshot.hasData && snapshot.data != null) {
+          final product = snapshot.data!;
+          manageStock = product.manageStock;
+          stockQuantityTotal = product.stockQuantity;
+        }
+
+        // ✅ Calcular stock real disponible (descontando otros items del pedido con el mismo producto)
+        int? stockRealDisponible = stockQuantityTotal;
+        if (manageStock && stockRealDisponible != null && stockQuantityTotal != null && currentOrderState.hasValue) {
+          final currentOrder = currentOrderState.value?.order;
+          if (currentOrder != null) {
+            // Identificador único del producto/variación actual
+            final currentItemId = item.isVariation
+                ? '${item.productId}_${item.variationId}'
+                : item.productId;
+
+            // Sumar cantidades de TODOS los items con el mismo producto (incluyendo este)
+            int cantidadTotalEnPedido = 0;
+            for (final otherItem in currentOrder.items) {
+              final otherItemId = otherItem.isVariation
+                  ? '${otherItem.productId}_${otherItem.variationId}'
+                  : otherItem.productId;
+
+              // Si es el mismo producto
+              if (otherItemId == currentItemId) {
+                cantidadTotalEnPedido += otherItem.quantity;
+              }
+            }
+
+            // Stock real disponible = stock total - cantidad total en pedido + cantidad de este item
+            // (sumamos la cantidad de este item porque el usuario puede cambiarla)
+            final int calculatedStock = stockQuantityTotal - cantidadTotalEnPedido + item.quantity;
+            stockRealDisponible = calculatedStock.clamp(0, stockQuantityTotal);
+          }
+        }
+
+        return _buildCard(
+          context,
+          ref,
+          theme,
+          orderNotifier,
+          isVariableProduct,
+          displayedName,
+          currentAttributeDisplay,
+          effectivePrice,
+          regularPrice,
+          onSale,
+          lineSubtotalBeforeManualDiscount,
+          lineTotalAfterIndividualDiscount,
+          itemSku,
+          manageStock,
+          stockRealDisponible,
+        );
+      },
+    );
+  }
+
+  Widget _buildCard(
+    BuildContext context,
+    WidgetRef ref,
+    ThemeData theme,
+    dynamic orderNotifier,
+    bool isVariableProduct,
+    String displayedName,
+    String currentAttributeDisplay,
+    double effectivePrice,
+    double? regularPrice,
+    bool onSale,
+    double lineSubtotalBeforeManualDiscount,
+    double lineTotalAfterIndividualDiscount,
+    String itemSku,
+    bool manageStock,
+    int? stockRealDisponible,
+  ) {
 
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 6.0),
@@ -155,6 +246,28 @@ class CurrentOrderItemCard extends ConsumerWidget {
                       ],
                     ),
                   ),
+                if (manageStock && stockRealDisponible != null && stockRealDisponible >= 0)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4.0),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text("Stock disponible:", style: TextStyle(fontSize: 13, color: Colors.grey.shade700)),
+                        Text(
+                          "$stockRealDisponible unidades",
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: stockRealDisponible < item.quantity
+                                ? Colors.red.shade700
+                                : stockRealDisponible < 5
+                                    ? Colors.orange.shade700
+                                    : Colors.green.shade700,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 const SizedBox(height: 16),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -164,8 +277,10 @@ class CurrentOrderItemCard extends ConsumerWidget {
                       key: ValueKey('qty_selector_${item.productId}_${item.variationId ?? ''}'),
                       value: item.quantity,
                       minValue: 0,
-                      maxValue: (manageStock && stockQuantity != null && stockQuantity >= 0)
-                          ? stockQuantity + item.quantity
+                      // ✅ FIX: maxValue es el stock REAL disponible (sin sumar item.quantity)
+                      // El usuario puede seleccionar hasta stockRealDisponible
+                      maxValue: (manageStock && stockRealDisponible != null && stockRealDisponible >= 0)
+                          ? stockRealDisponible
                           : 9999,
                       onChanged: (newQuantity) {
                         final itemUniqueIdForProvider = item.isVariation ? '${item.productId}_${item.variationId!}' : item.productId;

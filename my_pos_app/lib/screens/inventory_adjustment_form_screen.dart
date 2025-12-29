@@ -132,6 +132,11 @@ class _InventoryAdjustmentFormScreenState
 
     _initializeMovementType();
 
+    // ✅ Cargar conteo inicial de movimientos no sincronizados
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      getIt<InventoryRepository>().getUnsyncedMovementsCount(forceRefresh: true);
+    });
+
     if (widget.arguments?.initialProduct != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
@@ -398,6 +403,7 @@ class _InventoryAdjustmentFormScreenState
       if (!mounted) return;
       if (productToProcess == null) throw Exception("Producto no encontrado.");
 
+      // ✅ FIX: Cargar variaciones ANTES de actualizar el estado para productos variables
       if (productToProcess.isVariable) {
         _availableVariations = await getIt<ProductRepository>().getAllVariations(productToProcess.id);
       }
@@ -435,11 +441,8 @@ class _InventoryAdjustmentFormScreenState
         // Productos simples siempre se pueden usar directamente
         canUseDirectly = true;
       } else if (product.isVariable) {
-        // Si es variable pero no tiene opciones configurables, tratarlo como simple
-        if (product.fullAttributesWithOptions == null || product.fullAttributesWithOptions!.isEmpty) {
-          canUseDirectly = true;
-          debugPrint("[InventoryAdjustmentFormScreen] Producto variable sin opciones configurables - tratando como simple");
-        } else {
+        // ✅ FIX: Si tiene fullAttributesWithOptions, usarlo. Si no, construir desde variaciones.
+        if (product.fullAttributesWithOptions != null && product.fullAttributesWithOptions!.isNotEmpty) {
           // Tiene opciones - cargar los atributos para selección
           for (var attrDef in product.fullAttributesWithOptions!) {
             final String? uiName = attrDef['name']?.toString();
@@ -454,6 +457,51 @@ class _InventoryAdjustmentFormScreenState
               _currentSelectedAttributes[slug] = null;
             }
           }
+        } else if (_availableVariations.isNotEmpty) {
+          // ✅ FIX: Reconstruir atributos desde las variaciones disponibles
+          debugPrint("[InventoryAdjustment] 🔧 Reconstruyendo atributos desde ${_availableVariations.length} variaciones");
+
+          final Map<String, String> attributeNames = {};
+          final Map<String, Set<String>> attributeOptions = {};
+
+          for (final variation in _availableVariations) {
+            if (variation.attributes != null) {
+              for (final attr in variation.attributes!) {
+                final name = attr['name']?.toString();
+                final slug = attr['slug']?.toString() ?? name?.toLowerCase().replaceAll(' ', '-');
+                final option = attr['option']?.toString();
+
+                if (name != null && slug != null && option != null && option.isNotEmpty) {
+                  if (!attributeNames.containsKey(slug)) {
+                    attributeNames[slug] = name;
+                    attributeOptions[slug] = <String>{};
+                  }
+                  attributeOptions[slug]!.add(option);
+                }
+              }
+            }
+          }
+
+          // Construir _configurableAttributesUI desde los atributos extraídos
+          attributeNames.forEach((slug, name) {
+            final options = attributeOptions[slug]?.toList() ?? [];
+            options.sort();
+            if (options.isNotEmpty) {
+              _configurableAttributesUI.add({'name': name, 'options': options, 'slug': slug});
+              _currentSelectedAttributes[slug] = null;
+            }
+          });
+
+          if (_configurableAttributesUI.isNotEmpty) {
+            debugPrint("[InventoryAdjustment] ✅ Reconstruidos ${_configurableAttributesUI.length} atributos");
+          } else {
+            canUseDirectly = true;
+            debugPrint("[InventoryAdjustment] ⚠️ No se pudieron reconstruir atributos - tratando como simple");
+          }
+        } else {
+          // No tiene ni fullAttributesWithOptions ni variaciones
+          canUseDirectly = true;
+          debugPrint("[InventoryAdjustmentFormScreen] Producto variable sin opciones configurables - tratando como simple");
         }
       }
 
@@ -1017,16 +1065,25 @@ class _InventoryAdjustmentFormScreenState
       }
     } else {
       if (_currentQuantity <= 0) { if(mounted) setState(() => _currentProductError = "La cantidad a ajustar debe ser mayor a cero."); return; }
-      if (!productToAdd.manageStock && !_isCurrentItemEntry) {
-        if(mounted) setState(() => _currentProductError = "No se puede dar salida a un producto que no gestiona stock.");
-        return;
-      }
-      if (!_isCurrentItemEntry && _currentQuantity > stockBeforeValue ) {
+
+      // ✅ FIX: Permitir salidas incluso si no gestiona stock (para ajustes manuales)
+      // Solo validar stock disponible si el producto SÍ gestiona stock
+      if (productToAdd.manageStock && !_isCurrentItemEntry && _currentQuantity > stockBeforeValue) {
         if(mounted) setState(() => _currentProductError = "La cantidad de salida ($_currentQuantity) excede el stock actual ($stockBeforeValue).");
         return;
       }
+
       quantityChangedValue = _isCurrentItemEntry ? _currentQuantity : -_currentQuantity;
     }
+
+    // ✅ DEBUG: Logs para verificar qué se está enviando
+    debugPrint("[InventoryMovement] Creating movement line:");
+    debugPrint("  Product Name: ${productToAdd.name}");
+    debugPrint("  Is Variation: ${productToAdd.isVariation}");
+    debugPrint("  Product ID: ${productToAdd.id}");
+    debugPrint("  Parent ID: ${productToAdd.parentId}");
+    debugPrint("  SKU from product: ${productToAdd.sku}");
+    debugPrint("  Quantity Changed: $quantityChangedValue");
 
     final inventoryLine = InventoryMovementLine(
       productId: productToAdd.isVariation ? (productToAdd.parentId?.toString() ?? _currentFoundProduct!.id) : productToAdd.id,
@@ -1036,6 +1093,8 @@ class _InventoryAdjustmentFormScreenState
       stockBefore: stockBeforeValue,
       stockAfter: stockBeforeValue + quantityChangedValue,
     );
+
+    debugPrint("  ✅ Line created - ProductID: ${inventoryLine.productId}, VariationID: ${inventoryLine.variationId}, SKU: ${inventoryLine.sku}");
 
     setState(() {
       String message;
@@ -1335,8 +1394,9 @@ class _InventoryAdjustmentFormScreenState
             centerTitle: true,
             actions: [
               // ✅ LOCAL-FIRST: Badge para movimientos pendientes de sincronización
-              FutureBuilder<int>(
-                future: getIt<InventoryRepository>().getUnsyncedMovementsCount(),
+              StreamBuilder<int>(
+                stream: getIt<InventoryRepository>().unsyncedMovementsCountStream,
+                initialData: 0,
                 builder: (context, snapshot) {
                   final count = snapshot.data ?? 0;
                   return IconButton(
@@ -1382,6 +1442,8 @@ class _InventoryAdjustmentFormScreenState
           ),
           body: Column(
             children: [
+              // ⚠️ ADVERTENCIA: Zona horaria de WordPress
+              _buildTimezoneWarning(theme),
               Expanded(
                 child: SingleChildScrollView(
                   padding: EdgeInsets.fromLTRB(16.0, 16.0, 16.0, 24.0 + MediaQuery.of(context).padding.bottom + 90),
@@ -1833,35 +1895,19 @@ class _InventoryAdjustmentFormScreenState
   }
 
   List<Widget> _buildVariantSelectors(ThemeData theme) {
-    if (_currentFoundProduct?.fullAttributesWithOptions == null ||
-        _currentFoundProduct!.fullAttributesWithOptions!.isEmpty) {
+    // ✅ FIX: Usar _configurableAttributesUI que puede ser reconstruido desde variaciones
+    // en lugar de _currentFoundProduct!.fullAttributesWithOptions
+    if (_configurableAttributesUI.isEmpty) {
       return [const SizedBox.shrink()];
     }
 
-    final attributesToDisplay = _currentFoundProduct!.fullAttributesWithOptions!;
-
-    return attributesToDisplay.map<Widget>((attrDef) {
+    return _configurableAttributesUI.map<Widget>((attrDef) {
       final String attributeUiName = attrDef['name'] as String? ?? 'Atributo';
       final String attributeSlug = attrDef['slug'] as String? ?? attributeUiName.toLowerCase().replaceAll(' ', '-');
-
-      // ⚡ FIX: Extraer opciones desde las variaciones disponibles en lugar de usar IDs
-      // Las variaciones tienen el formato correcto: {"name":"Color","option":"Rojo","slug":"pa_color"}
-      final Set<String> optionsSet = {};
-
-      for (final variation in _availableVariations) {
-        if (variation.attributes != null) {
-          for (final variantAttr in variation.attributes!) {
-            final variantSlug = variantAttr['slug']?.toString().toLowerCase().trim();
-            final variantOption = variantAttr['option']?.toString().trim();
-
-            if (variantSlug == attributeSlug.toLowerCase() && variantOption != null && variantOption.isNotEmpty) {
-              optionsSet.add(variantOption);
-            }
-          }
-        }
-      }
-
-      final List<String> options = optionsSet.toList()..sort();
+      final List<String> options = (attrDef['options'] as List<dynamic>?)
+          ?.map((o) => o.toString())
+          .where((o) => o.isNotEmpty)
+          .toList() ?? [];
 
       debugPrint("[InventoryAdjustment] 🎨 Atributo '$attributeUiName' ($attributeSlug) tiene ${options.length} opciones: $options");
 
@@ -1897,5 +1943,122 @@ class _InventoryAdjustmentFormScreenState
           )
       );
     }).toList();
+  }
+
+  /// ⚠️ Widget para mostrar advertencia sobre zona horaria de WordPress
+  /// Muestra información solo si hay problemas de sincronización frecuentes
+  Widget _buildTimezoneWarning(ThemeData theme) {
+    return FutureBuilder<int>(
+      future: getIt<InventoryRepository>().getUnsyncedMovementsCount(),
+      builder: (context, snapshot) {
+        final unsyncedCount = snapshot.data ?? 0;
+
+        // Solo mostrar si hay movimientos sin sincronizar y refrescamiento frecuente
+        if (unsyncedCount == 0) return const SizedBox.shrink();
+
+        return Container(
+          margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+          child: Card(
+            color: Colors.orange.shade50,
+            elevation: 2,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(color: Colors.orange.shade200, width: 1.5),
+            ),
+            child: ExpansionTile(
+              leading: Icon(Icons.warning_amber_rounded, color: Colors.orange.shade700, size: 28),
+              title: Text(
+                'Problemas de sincronización detectados',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.orange.shade900,
+                  fontSize: 14,
+                ),
+              ),
+              subtitle: Text(
+                '$unsyncedCount movimiento(s) sin sincronizar',
+                style: TextStyle(color: Colors.orange.shade800, fontSize: 12),
+              ),
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '⚠️ Causa común: Zona horaria incorrecta',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          color: Colors.orange.shade900,
+                          fontSize: 13,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Si experimenta refrescamiento excesivo o problemas al guardar ajustes de inventario, asegúrese que la zona horaria de WordPress coincida con la del dispositivo.',
+                        style: TextStyle(
+                          color: Colors.grey.shade700,
+                          fontSize: 12.5,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade100,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.grey.shade300),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.settings, size: 16, color: theme.primaryColor),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'Cómo ajustar en WordPress:',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12.5,
+                                    color: theme.primaryColor,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              '1. Panel de WordPress → Ajustes → Generales\n'
+                              '2. Busque "Zona horaria"\n'
+                              '3. Seleccione su ciudad o UTC offset\n'
+                              '4. Guarde los cambios\n'
+                              '5. Sincronice nuevamente desde la app',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey.shade800,
+                                height: 1.4,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '💡 Nota: La zona horaria afecta las marcas de tiempo de los movimientos de inventario.',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: Colors.grey.shade600,
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 }

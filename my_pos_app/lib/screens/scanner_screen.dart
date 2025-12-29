@@ -34,10 +34,9 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
   bool _hideImagesInSearch = false;
   String _currentSearchQueryForDebounce = '';
   int _currentBottomNavIndex = 0;
-  bool _isCameraPausedManually = false;
-
-  // Bandera para evitar múltiples diálogos
-  bool _isShowingProductDialog = false;
+  bool _isCameraPausedManually = false; // ✅ MEJORA: Estado de pausa manual
+  bool _isShowingProductDialog = false; // ✅ FIX: Bandera para prevenir múltiples diálogos simultáneos
+  String? _lastProcessedProductId; // ✅ FIX: ID del último producto procesado para evitar duplicados
 
   StreamSubscription? _rapidScanSubscription;
   StreamSubscription? _notificationSubscription;
@@ -132,16 +131,20 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
   void _showProductBottomSheet(Product product) {
     if (!mounted) return;
 
-    // Evitar aperturas múltiples
-    if (_isShowingProductDialog) {
-      return;
-    }
-    _isShowingProductDialog = true;
+    // ✅ MEJORA: Pausar cámara mientras se muestra el diálogo (ahorro de batería)
+    final scannerNotifier = ref.read(scannerProvider.notifier);
+    final scannerController = scannerNotifier.scannerService.controller;
 
-    // 🔥 CORRECCIÓN CRÍTICA: NO PAUSAR LA CÁMARA
-    // Eliminamos scannerController.stop(). Esto mantiene la cámara viva
-    // detrás del modal, evitando el error "BufferQueue abandoned" y permitiendo
-    // un escaneo rápido inmediato al cerrar.
+    debugPrint("[ScannerScreen] 📱 Showing product bottom sheet - PAUSING camera");
+
+    // Pausar la cámara antes de mostrar el diálogo
+    if (scannerController != null) {
+      try {
+        scannerController.stop();
+      } catch (e) {
+        debugPrint("[ScannerScreen] ⚠️ Error pausing camera: $e");
+      }
+    }
 
     showModalBottomSheet(
       context: context,
@@ -149,19 +152,28 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
       backgroundColor: Colors.transparent,
       builder: (context) => AddToCartDialog(productId: product.id),
     ).whenComplete(() {
-      debugPrint("[ScannerScreen] Bottom sheet closed - Clearing found state");
+      debugPrint("[ScannerScreen] Bottom sheet closed - RESUMING scanner");
+
+      // ✅ FIX: Resetear banderas cuando el diálogo se cierra
       _isShowingProductDialog = false;
+      _lastProcessedProductId = null; // Permitir escanear el mismo producto nuevamente
 
+      // ✅ MEJORA: Reanudar la cámara después de un delay para evitar pantalla en blanco
       if (mounted && !_isCameraPausedManually) {
-        // Al cerrar, solo reseteamos el estado lógico (para salir de 'productFound')
-        // pero NO reiniciamos el hardware si ya está corriendo.
-        final scannerNotifier = ref.read(scannerProvider.notifier);
-
-        // resetScanner limpia el estado 'productFound'
-        scannerNotifier.resetScanner().then((_) {
-          // Aseguramos que la cámara esté activa para el siguiente escaneo
-          if (mounted && !_isCameraPausedManually) {
-            scannerNotifier.startScanner();
+        Future.delayed(const Duration(milliseconds: 300), () {
+          if (mounted && scannerController != null && !_isCameraPausedManually) {
+            try {
+              scannerController.start();
+              debugPrint("[ScannerScreen] ✅ Camera resumed successfully");
+            } catch (e) {
+              debugPrint("[ScannerScreen] ⚠️ Error resuming camera: $e");
+              // Si falla, hacer reset completo
+              scannerNotifier.resetScanner().then((_) {
+                if (mounted && !_isCameraPausedManually) {
+                  scannerNotifier.startScanner();
+                }
+              });
+            }
           }
         });
       }
@@ -183,8 +195,7 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
               !_barcodeFocusNode.hasFocus &&
               appStateValue.isAppConfigured &&
               !scannerState.isCameraActive &&
-              !scannerState.isProcessingBarcode &&
-              !_isShowingProductDialog) {
+              !scannerState.isProcessingBarcode) {
             debugPrint("[ScannerScreen] App resumed - restarting scanner");
             ref.read(scannerProvider.notifier).startScanner();
           }
@@ -192,11 +203,7 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
         case AppLifecycleState.inactive:
         case AppLifecycleState.paused:
         case AppLifecycleState.hidden:
-        // Solo reseteamos si no estamos mostrando el diálogo de producto
-        // para evitar cerrar la cámara si el usuario solo cambió de foco momentáneamente
-          if (scannerState.isCameraActive && !_isShowingProductDialog) {
-            ref.read(scannerProvider.notifier).resetScanner();
-          }
+          if (scannerState.isCameraActive) ref.read(scannerProvider.notifier).resetScanner();
           break;
         case AppLifecycleState.detached:
           break;
@@ -375,27 +382,37 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
 
           debugPrint("[ScannerScreen] 🎯 Product found from scan: ${next.scannedProduct!.name}");
 
-          if (mounted) {
+          // ✅ FIX: Verificar bandera Y último producto procesado para prevenir duplicados
+          if (mounted && !_isShowingProductDialog && next.scannedProduct!.id != _lastProcessedProductId) {
+            _isShowingProductDialog = true; // Marcar INMEDIATAMENTE
+            _lastProcessedProductId = next.scannedProduct!.id; // Registrar producto procesado
+            debugPrint("[ScannerScreen] 🔵 Opening dialog for product ID: ${next.scannedProduct!.id}");
             _showProductBottomSheet(next.scannedProduct!);
+          } else if (_isShowingProductDialog) {
+            debugPrint("[ScannerScreen] ⚠️ Prevented duplicate dialog - already showing product dialog");
+          } else if (next.scannedProduct!.id == _lastProcessedProductId) {
+            debugPrint("[ScannerScreen] ⚠️ Prevented duplicate dialog - same product already processed (ID: ${next.scannedProduct!.id})");
           }
         }
 
+        // También manejar el caso de error - resetear automáticamente después de 3 segundos
         if (next.viewState == ScannerViewState.error &&
             previous?.viewState != ScannerViewState.error) {
           debugPrint("[ScannerScreen] ⚠️ Scanner error detected, will auto-reset");
           Future.delayed(const Duration(seconds: 3), () {
-            if (mounted && !_isShowingProductDialog) {
+            if (mounted) {
               ref.read(scannerProvider.notifier).resetScanner();
               ref.read(scannerProvider.notifier).startScanner();
             }
           });
         }
 
+        // Y manejar el caso de "no product" - resetear automáticamente después de 2 segundos
         if (next.viewState == ScannerViewState.noProduct &&
             previous?.viewState != ScannerViewState.noProduct) {
           debugPrint("[ScannerScreen] 📭 No product found, will auto-resume");
           Future.delayed(const Duration(seconds: 2), () {
-            if (mounted && !_isShowingProductDialog) {
+            if (mounted) {
               ref.read(scannerProvider.notifier).resetScanner();
               ref.read(scannerProvider.notifier).startScanner();
             }
@@ -526,7 +543,10 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
     if (scannerState.isSearching && scannerState.searchResults.isEmpty) return const _LoadingView(message: "Buscando...");
     if (scannerState.searchErrorText != null && scannerState.searchResults.isEmpty) return _SearchErrorView(searchErrorText: scannerState.searchErrorText!, onRetry: () => _clearSearchAndResetScanner());
     if (scannerState.searchResults.isNotEmpty) return _SearchResultsList(searchResults: scannerState.searchResults, hideImagesInSearch: _hideImagesInSearch, currencyFormat: currencyFormat, onProductTap: (product) {
-      if (mounted) {
+      // ✅ FIX: Verificar bandera Y último producto procesado ANTES de mostrar el diálogo
+      if (mounted && !_isShowingProductDialog && product.id != _lastProcessedProductId) {
+        _isShowingProductDialog = true;
+        _lastProcessedProductId = product.id; // Registrar producto procesado
         _showProductBottomSheet(product);
         _clearSearchAndResetScanner();
       }
@@ -873,15 +893,18 @@ class _ScannerView extends ConsumerWidget {
               ),
               const SizedBox(height: 8),
               ElevatedButton.icon(
-                icon: const Icon(Icons.stop_circle_outlined, size: 20),
-                label: const Text("Detener"),
+                icon: const Icon(Icons.close, size: 20),
+                label: const Text("Cerrar"),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.black54,
+                  backgroundColor: Colors.red.shade700,
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 ),
-                onPressed: () {
-                  scannerNotifier.resetScanner();
+                onPressed: () async {
+                  // ✅ FIX: Solo cerrar la cámara y volver a modo búsqueda manual
+                  // NO salir de la pantalla del scanner
+                  await scannerNotifier.resetScanner();
+                  debugPrint("[ScannerScreen] 🔴 Cámara cerrada - volviendo a modo búsqueda manual");
                 },
               ),
             ],
