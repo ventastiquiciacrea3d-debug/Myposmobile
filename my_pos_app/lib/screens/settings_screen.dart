@@ -21,6 +21,7 @@ import '../locator.dart';
 import '../widgets/app_header.dart';
 import '../widgets/dial_floating_action_button.dart';
 import '../widgets/custom_fab_location.dart';
+import '../widgets/quote_settings_section.dart';
 import '../config/constants.dart';
 import '../config/routes.dart';
 
@@ -512,6 +513,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               prefs: prefs, individualDiscountsEnabled: _individualDiscountsEnabled,
               inactiveTrackColor: _inactiveTrackColor, inactiveThumbColor: _inactiveThumbColor,
               onDiscountsChanged: (v) async { if(mounted) setState(() => _individualDiscountsEnabled = v); await prefs.setBool(individualDiscountsEnabledPrefKey, v); },
+            ),
+                // ✅ QUOTE SETTINGS: Configuración de cotizaciones
+                (ctx, sm) => QuoteSettingsSection(
+              prefs: prefs,
+              inactiveTrackColor: _inactiveTrackColor,
+              inactiveThumbColor: _inactiveThumbColor,
             ),
                 (ctx, sm) => _SecuritySection(
               prefs: prefs, useBiometrics: _useBiometrics, checkBiometricAvailability: _checkBiometricAvailability,

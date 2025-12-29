@@ -23,11 +23,13 @@ import '../utils/pdf_generator.dart';
 import '../widgets/order/current_order_item_card.dart';
 import '../widgets/order/history_order_item_card.dart';
 import '../widgets/customer_selection_dialog.dart'; // ✅ FASE 3: Customer selection
+import '../widgets/share_quote_dialog.dart'; // ✅ QUOTE: Share quote dialog
 import '../screens/draft_orders_screen.dart'; // ✅ FASE 3: Draft orders
 import '../models/customer.dart'; // ✅ FASE 3: Customer model
 
 import '../services/woocommerce_service.dart';
 import '../services/storage_service.dart'; // ✅ FASE 3: Para draft orders
+import '../services/quote_share_service.dart'; // ✅ QUOTE: Quote share service
 import '../locator.dart'; // ✅ FASE 3: Para getIt
 
 class ModalScaffold extends StatelessWidget {
@@ -751,6 +753,65 @@ class _OrderScreenState extends ConsumerState<OrderScreen> with TickerProviderSt
     }
   }
 
+  // ✅ QUOTE: Compartir cotización
+  Future<void> _shareQuote(BuildContext context, Order order) async {
+    if (order.items.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Agrega productos al pedido primero'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    try {
+      // Obtener el servicio de cotizaciones
+      final quoteService = getIt<QuoteShareService>();
+
+      // Convertir OrderItems a QuoteItems
+      final quoteItems = order.items.map((item) => QuoteItem(
+        name: item.name,
+        quantity: item.quantity,
+        price: item.price,
+        sku: item.sku,
+      )).toList();
+
+      // Obtener información del cliente si está disponible
+      final customerState = ref.read(customerProvider);
+      final customerName = customerState.selectedCustomerName != 'Cliente General'
+          ? customerState.selectedCustomerName
+          : null;
+
+      // Generar número de cotización
+      final now = DateTime.now();
+      final quoteNumber = 'COT-${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}-${now.hour}${now.minute}${now.second}';
+
+      // Mostrar diálogo de compartir
+      await showShareQuoteDialog(
+        context: context,
+        items: quoteItems,
+        subtotal: order.subtotal,
+        taxAmount: order.tax,
+        total: order.total,
+        quoteShareService: quoteService,
+        customerName: customerName,
+        customerPhone: null,  // No disponible en CustomerState
+        customerEmail: null,  // No disponible en CustomerState
+        quoteNumber: quoteNumber,
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error al preparar cotización: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -1025,6 +1086,26 @@ class _OrderScreenState extends ConsumerState<OrderScreen> with TickerProviderSt
                   ),
                 ),
               ],
+            ),
+
+            const SizedBox(height: 8),
+
+            // ✅ QUOTE: Botón Compartir Cotización
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: order.items.isEmpty ? null : () => _shareQuote(context, order),
+                icon: const Icon(Icons.share, size: 18),
+                label: const Text('Compartir Cotización'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blue.shade600,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+              ),
             ),
 
             const SizedBox(height: 12),

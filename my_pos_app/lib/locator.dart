@@ -32,6 +32,7 @@ import 'services/woocommerce_service.dart';
 import 'services/data_migration_service.dart';
 import 'services/product_sync_service.dart'; // ✅ Servicio para descargar todos los productos
 import 'services/local_search_service.dart'; // ✅ V3: Búsqueda SOLO LOCAL
+import 'services/quote_share_service.dart'; // ✅ Servicio para compartir cotizaciones
 
 // ✅ OPTIMIZACIÓN EXTREMA: Nuevos servicios de batería y almacenamiento
 import 'services/event_driven_polling_service.dart';
@@ -191,6 +192,13 @@ Future<void> setupLocator() async {
 
   // ✓ PROPUESTA 1: Cache Warming Service (depende de repositories)
   getIt.registerLazySingleton<CacheWarmingService>(() => CacheWarmingService());
+
+  // ✅ QUOTE SHARE SERVICE: Servicio para compartir cotizaciones en PDF y texto
+  getIt.registerSingletonAsync<QuoteShareService>(() async {
+    final quoteService = QuoteShareService();
+    await quoteService.initialize();
+    return quoteService;
+  });
 
   // Ensure all async singletons are ready before proceeding
   await getIt.allReady();
