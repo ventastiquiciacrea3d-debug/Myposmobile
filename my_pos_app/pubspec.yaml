@@ -38,6 +38,7 @@ dependencies:
   flutter_contacts: ^1.1.9+2
   fluttertoast: ^8.2.12
   collection: ^1.19.1
+  sqflite: ^2.3.3  # Local database for customers
   image_picker: ^1.1.2
   path: ^1.9.1
   hive: ^2.2.3
