@@ -28,7 +28,9 @@
       "Bash(flutter analyze:*)",
       "Bash(if exist nul del /F /Q nul)",
       "Bash(git rm:*)",
-      "Bash(flutter devices)"
+      "Bash(flutter devices)",
+      "Bash(flutter build:*)",
+      "Bash(flutter install:*)"
     ],
     "deny": [],
     "ask": []

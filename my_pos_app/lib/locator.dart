@@ -33,6 +33,8 @@ import 'services/data_migration_service.dart';
 import 'services/product_sync_service.dart'; // ✅ Servicio para descargar todos los productos
 import 'services/local_search_service.dart'; // ✅ V3: Búsqueda SOLO LOCAL
 import 'services/quote_share_service.dart'; // ✅ Servicio para compartir cotizaciones
+import 'services/local_database_service.dart'; // ✅ Servicio de base de datos local SQLite
+import 'services/customer_manager_service.dart'; // ✅ Servicio de gestión de clientes
 
 // ✅ OPTIMIZACIÓN EXTREMA: Nuevos servicios de batería y almacenamiento
 import 'services/event_driven_polling_service.dart';
@@ -126,6 +128,15 @@ Future<void> setupLocator() async {
   getIt.registerLazySingleton<WooCommerceService>(() => WooCommerceService(
     storageService: getIt<StorageService>(),
     connectivityService: getIt<ConnectivityService>(),
+  ));
+
+  // ✅ FASE 2: Local Database Service - Base de datos SQLite para clientes
+  getIt.registerLazySingleton<LocalDatabaseService>(() => LocalDatabaseService());
+
+  // ✅ FASE 2: Customer Manager Service - Gestión integrada de clientes
+  getIt.registerLazySingleton<CustomerManagerService>(() => CustomerManagerService(
+    localDb: getIt<LocalDatabaseService>(),
+    wooService: getIt<WooCommerceService>(),
   ));
 
   // Se registra el ScannerService que faltaba.
