@@ -14,6 +14,8 @@ enum SyncOperationType {
   updateOrderStatus,
   @HiveField(2)
   inventoryAdjustment,
+  @HiveField(3)
+  updateOrder,  // 🔧 NUEVO: Para actualizar pedidos completos (no solo estado)
 }
 
 /// ✓ PROPUESTA 2: Estados de una operación de sincronización
@@ -104,6 +106,8 @@ class SyncOperation extends HiveObject {
     switch (type) {
       case SyncOperationType.createOrder:
         return SyncPriority.critical; // Ventas son críticas
+      case SyncOperationType.updateOrder:
+        return SyncPriority.critical; // Actualizaciones de pedidos también son críticas
       case SyncOperationType.inventoryAdjustment:
         return SyncPriority.high; // Inventario es importante
       case SyncOperationType.updateOrderStatus:

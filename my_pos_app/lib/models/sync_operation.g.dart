@@ -78,6 +78,8 @@ class SyncOperationTypeAdapter extends TypeAdapter<SyncOperationType> {
         return SyncOperationType.updateOrderStatus;
       case 2:
         return SyncOperationType.inventoryAdjustment;
+      case 3:
+        return SyncOperationType.updateOrder;
       default:
         return SyncOperationType.createOrder;
     }
@@ -94,6 +96,9 @@ class SyncOperationTypeAdapter extends TypeAdapter<SyncOperationType> {
         break;
       case SyncOperationType.inventoryAdjustment:
         writer.writeByte(2);
+        break;
+      case SyncOperationType.updateOrder:
+        writer.writeByte(3);
         break;
     }
   }

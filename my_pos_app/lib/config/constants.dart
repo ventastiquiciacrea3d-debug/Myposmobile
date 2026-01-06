@@ -25,6 +25,9 @@ const String lastConnectedPrinterPrefKey = 'last_connected_printer';
 const String autoSyncProductsPrefKey = 'auto_sync_products_enabled';
 const String productsSyncIntervalPrefKey = 'products_sync_interval_seconds';
 
+// 🟢 NUEVO: Configuración de auto-guardado de borradores por inactividad
+const String draftInactivityMinutesPrefKey = 'draft_inactivity_minutes';
+
 // --- Secure Storage Keys ---
 const String secureApiUrlKey = 'api_url';
 const String secureMyPosApiKey = 'mypos_api_key';

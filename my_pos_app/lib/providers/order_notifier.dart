@@ -35,6 +35,16 @@ class CurrentOrder extends _$CurrentOrder {
 
   Timer? _errorTimer;
   Timer? _saveOrderDebounce;
+  Timer? _inactivityTimer;
+  DateTime _lastInteractionTime = DateTime.now();
+
+  // Configuración de auto-guardado de borradores
+  Duration _inactivityDuration = const Duration(minutes: 10); // Default: 10 minutos (configurable)
+  static const Duration _draftExpirationDuration = Duration(hours: 24); // 24 horas para eliminar borradores
+
+  // 🔧 Tracking de edición de pedidos
+  String? _originalOrderIdBeingEdited; // ID del pedido original que se está editando
+  List<OrderItem>? _originalItemsSnapshot; // Snapshot de items antes de editar (para comparar stock)
 
   @override
   Future<CurrentOrderState> build() async {
@@ -52,6 +62,7 @@ class CurrentOrder extends _$CurrentOrder {
       debugPrint("[CurrentOrder] Disposing");
       _errorTimer?.cancel();
       _saveOrderDebounce?.cancel();
+      _inactivityTimer?.cancel();
     });
 
     // Cargar configuración inicial
@@ -59,16 +70,27 @@ class CurrentOrder extends _$CurrentOrder {
     final double taxRate = ((double.tryParse(taxString.replaceAll(',', '.')) ?? 13.0) / 100.0).clamp(0.0, 1.0);
     final bool allowIndividualDiscounts = _sharedPreferences.getBool(individualDiscountsEnabledPrefKey) ?? true;
 
+    // 🟢 Cargar configuración de tiempo de inactividad de borradores
+    final int draftInactivityMinutes = _sharedPreferences.getInt(draftInactivityMinutesPrefKey) ?? 10;
+    _inactivityDuration = Duration(minutes: draftInactivityMinutes);
+    debugPrint("[CurrentOrder] Tiempo de inactividad configurado: $_inactivityDuration");
+
     try {
       // Intentar cargar orden guardada
       Map<String, Order> pendingOrders = _orderRepository.getPendingOrders();
       final savedCurrentOrder = pendingOrders[hiveCurrentOrderPendingKey];
+
+      // Limpiar borradores antiguos en segundo plano
+      _cleanupOldDrafts();
 
       if (savedCurrentOrder != null) {
         debugPrint("[CurrentOrder] Found saved current order: ${savedCurrentOrder.id}");
 
         // Recalcular totales
         final recalculated = _recalculateOrder(savedCurrentOrder, taxRate);
+
+        // Iniciar timer de inactividad
+        _startInactivityTimer();
 
         return CurrentOrderState(
           order: recalculated,
@@ -82,6 +104,9 @@ class CurrentOrder extends _$CurrentOrder {
         debugPrint("[CurrentOrder] No saved current order found. Creating new.");
         final newOrder = _createNewOrder();
 
+        // Iniciar timer de inactividad
+        _startInactivityTimer();
+
         return CurrentOrderState(
           order: newOrder,
           isLoading: false,
@@ -94,6 +119,9 @@ class CurrentOrder extends _$CurrentOrder {
     } catch (e, s) {
       debugPrint("[CurrentOrder] !! ERROR during initialization: $e\nStack: $s");
 
+      // Iniciar timer de inactividad incluso con error
+      _startInactivityTimer();
+
       return CurrentOrderState(
         order: _createNewOrder(),
         isLoading: false,
@@ -102,6 +130,105 @@ class CurrentOrder extends _$CurrentOrder {
         taxRate: taxRate,
         allowIndividualDiscounts: allowIndividualDiscounts,
       );
+    }
+  }
+
+  /// Inicia el timer de inactividad para auto-guardar como borrador
+  void _startInactivityTimer() {
+    _inactivityTimer?.cancel();
+    _lastInteractionTime = DateTime.now();
+
+    _inactivityTimer = Timer.periodic(const Duration(minutes: 1), (timer) async {
+      final currentState = state.value;
+      if (currentState == null || currentState.order == null) return;
+
+      final order = currentState.order!;
+      final timeSinceLastInteraction = DateTime.now().difference(_lastInteractionTime);
+
+      // Si hay inactividad y el pedido no está vacío, guardar como borrador
+      if (timeSinceLastInteraction >= _inactivityDuration && order.items.isNotEmpty) {
+        debugPrint("[CurrentOrder] ⏱️ Inactividad detectada (${timeSinceLastInteraction.inMinutes} min). Auto-guardando como borrador...");
+        await _autoSaveAsDraft();
+        timer.cancel(); // Cancelar el timer después de guardar
+      }
+    });
+  }
+
+  /// Resetea el timer de inactividad (llamar en cada interacción)
+  void _resetInactivityTimer() {
+    _lastInteractionTime = DateTime.now();
+    debugPrint("[CurrentOrder] 🔄 Interacción detectada. Timer de inactividad reseteado.");
+  }
+
+  /// Auto-guarda el pedido actual como borrador en historial
+  Future<void> _autoSaveAsDraft() async {
+    try {
+      final currentState = state.value;
+      if (currentState == null || currentState.order == null) return;
+
+      final order = currentState.order!;
+      if (order.items.isEmpty) {
+        debugPrint("[CurrentOrder] ⚠️ No se puede guardar borrador vacío");
+        return;
+      }
+
+      // 🔧 FIX: Guardar en pendingOrders para que aparezca en historial
+      // Generar ID si no existe
+      final draftId = order.id ?? 'local_${const Uuid().v4()}';
+
+      // Crear orden de borrador con estado 'draft'
+      final draftOrder = order.copyWith(
+        id: draftId,
+        orderStatus: 'draft',  // Estado especial para borradores
+        date: DateTime.now(),
+        isSynced: false,
+      );
+
+      // Guardar en pendingOrders (aparecerá en historial)
+      await _orderRepository.savePendingOrder(draftOrder, draftId);
+
+      debugPrint("[CurrentOrder] ✅ Pedido guardado como borrador en historial: $draftId");
+
+      // Limpiar el pedido actual
+      await clearOrder();
+
+    } catch (e) {
+      debugPrint("[CurrentOrder] ❌ Error al auto-guardar borrador: $e");
+    }
+  }
+
+  /// Limpia borradores antiguos (más de X horas) del historial de pedidos
+  Future<void> _cleanupOldDrafts() async {
+    try {
+      final pendingOrders = _orderRepository.getPendingOrders();
+      final now = DateTime.now();
+      int deletedCount = 0;
+
+      for (final entry in pendingOrders.entries) {
+        try {
+          final order = entry.value;
+
+          // Solo procesar borradores (status 'draft')
+          if (order.orderStatus != 'draft') continue;
+
+          final age = now.difference(order.date);
+
+          // Si el borrador es muy antiguo, eliminarlo
+          if (age >= _draftExpirationDuration) {
+            await _orderRepository.removePendingOrder(entry.key);
+            deletedCount++;
+            debugPrint("[CurrentOrder] 🗑️ Borrador antiguo eliminado: ${entry.key} (${age.inHours}h)");
+          }
+        } catch (e) {
+          debugPrint("[CurrentOrder] ⚠️ Error procesando borrador para limpieza: $e");
+        }
+      }
+
+      if (deletedCount > 0) {
+        debugPrint("[CurrentOrder] ✅ Limpieza completada: $deletedCount borradores antiguos eliminados");
+      }
+    } catch (e) {
+      debugPrint("[CurrentOrder] ❌ Error en limpieza de borradores: $e");
     }
   }
 
@@ -220,6 +347,13 @@ class CurrentOrder extends _$CurrentOrder {
   }
 
   Future<void> clearOrder() async {
+    // 🔄 Resetear timer de inactividad al limpiar pedido
+    _resetInactivityTimer();
+
+    // 🔧 Limpiar tracking de edición
+    _originalOrderIdBeingEdited = null;
+    _originalItemsSnapshot = null;
+
     state = await AsyncValue.guard(() async {
       final currentState = state.requireValue;
       final newOrder = _createNewOrder();
@@ -237,6 +371,9 @@ class CurrentOrder extends _$CurrentOrder {
   }
 
   Future<void> updateOrderCustomer(String? customerId, String customerName) async {
+    // 🔄 Resetear timer de inactividad
+    _resetInactivityTimer();
+
     state = await AsyncValue.guard(() async {
       final currentState = state.requireValue;
       final currentOrder = currentState.order;
@@ -270,6 +407,9 @@ class CurrentOrder extends _$CurrentOrder {
       int quantity, {
         List<Map<String, String>>? explicitAttributes,
       }) async {
+    // 🔄 Resetear timer de inactividad
+    _resetInactivityTimer();
+
     if (quantity <= 0) {
       _setError("La cantidad debe ser mayor a 0.", durationSeconds: 3);
       return;
@@ -408,6 +548,9 @@ class CurrentOrder extends _$CurrentOrder {
   }
 
   Future<void> duplicateOrderItem(String uniqueItemId) async {
+    // 🔄 Resetear timer de inactividad
+    _resetInactivityTimer();
+
     state = await AsyncValue.guard(() async {
       final currentState = state.requireValue;
       final currentOrder = currentState.order;
@@ -473,6 +616,9 @@ class CurrentOrder extends _$CurrentOrder {
   }
 
   Future<void> updateItemQuantity(String uniqueItemId, int quantity) async {
+    // 🔄 Resetear timer de inactividad
+    _resetInactivityTimer();
+
     if (quantity < 0) return;
 
     state = await AsyncValue.guard(() async {
@@ -544,6 +690,9 @@ class CurrentOrder extends _$CurrentOrder {
   }
 
   Future<void> removeItem(String uniqueItemId) async {
+    // 🔄 Resetear timer de inactividad
+    _resetInactivityTimer();
+
     debugPrint("[CurrentOrder.removeItem] Removing item $uniqueItemId");
     await updateItemQuantity(uniqueItemId, 0);
   }
@@ -696,6 +845,103 @@ class CurrentOrder extends _$CurrentOrder {
     }
   }
 
+  /// 🔧 NUEVO: Calcular y aplicar delta de stock al editar pedidos
+  Future<void> _updateStockDelta(Order updatedOrder) async {
+    if (_originalItemsSnapshot == null) {
+      debugPrint("[CurrentOrder.updateStockDelta] ⚠️ No hay snapshot original, actualizando stock normalmente");
+      await _updateLocalStockImmediately(updatedOrder);
+      return;
+    }
+
+    try {
+      debugPrint("[CurrentOrder.updateStockDelta] 📊 Calculando delta de stock...");
+
+      // Crear mapas para comparación rápida (productId -> cantidad)
+      final Map<int, double> originalQuantities = {};
+      for (final item in _originalItemsSnapshot!) {
+        final int productId = item.variationId != null && item.variationId! > 0
+            ? item.variationId!
+            : int.tryParse(item.productId) ?? 0;
+
+        if (productId > 0) {
+          originalQuantities[productId] = (originalQuantities[productId] ?? 0) + item.quantity;
+        }
+      }
+
+      final Map<int, double> currentQuantities = {};
+      for (final item in updatedOrder.items) {
+        final int productId = item.variationId != null && item.variationId! > 0
+            ? item.variationId!
+            : int.tryParse(item.productId) ?? 0;
+
+        if (productId > 0) {
+          currentQuantities[productId] = (currentQuantities[productId] ?? 0) + item.quantity;
+        }
+      }
+
+      // Calcular diferencias (delta positivo = se agregó, delta negativo = se quitó)
+      final Map<int, double> deltas = {};
+
+      // Productos en el pedido actual
+      for (final entry in currentQuantities.entries) {
+        final originalQty = originalQuantities[entry.key] ?? 0;
+        final delta = entry.value - originalQty;
+        if (delta != 0) {
+          deltas[entry.key] = delta;
+        }
+      }
+
+      // Productos que fueron removidos (estaban en original pero no en actual)
+      for (final entry in originalQuantities.entries) {
+        if (!currentQuantities.containsKey(entry.key)) {
+          deltas[entry.key] = -entry.value; // Liberar todo el stock
+        }
+      }
+
+      if (deltas.isEmpty) {
+        debugPrint("[CurrentOrder.updateStockDelta] ✅ No hay cambios de stock");
+        return;
+      }
+
+      debugPrint("[CurrentOrder.updateStockDelta] 📦 Aplicando ${deltas.length} cambios de stock:");
+
+      // Aplicar deltas al stock local usando ObjectBox
+      final box = _databaseService.store.box<ProductOptimized>();
+
+      for (final entry in deltas.entries) {
+        final productId = entry.key;
+        final delta = entry.value;
+
+        // Buscar producto en ObjectBox
+        final query = box.query(ProductOptimized_.id.equals(productId)).build();
+        final product = query.findFirst();
+        query.close();
+
+        if (product != null) {
+          final int oldStock = product.stockQuantity;
+
+          // Si delta > 0: se agregó cantidad → reducir stock
+          // Si delta < 0: se quitó cantidad → aumentar stock
+          product.stockQuantity = max(0, product.stockQuantity - delta.toInt());
+          product.lastUpdated = DateTime.now();
+
+          // Guardar cambio en ObjectBox
+          box.put(product);
+
+          final changeStr = delta > 0 ? "-${delta.toInt()}" : "+${(-delta).toInt()}";
+          debugPrint("[CurrentOrder.updateStockDelta]   ${product.name}: $oldStock → ${product.stockQuantity} ($changeStr)");
+        } else {
+          debugPrint("[CurrentOrder.updateStockDelta]   ⚠️ Product ID $productId not found in ObjectBox");
+        }
+      }
+
+      debugPrint("[CurrentOrder.updateStockDelta] ✅ Delta de stock aplicado exitosamente");
+    } catch (e, stackTrace) {
+      debugPrint("[CurrentOrder.updateStockDelta] ❌ ERROR aplicando delta de stock: $e\n$stackTrace");
+      // No rethrow - continuar con el pedido aunque falle la actualización de stock
+    }
+  }
+
   /// ✓ FASE 3: Guardar orden (encolar para sincronización)
   Future<String?> saveOrder({String? finalStatus}) async {
     final currentState = state.requireValue;
@@ -716,34 +962,67 @@ class CurrentOrder extends _$CurrentOrder {
     }
 
     final recalculated = _recalculateOrder(orderToProcess, currentState.taxRate);
-    final localId = 'local_${const Uuid().v4()}';
+
+    // 🔧 DETECCIÓN DE ACTUALIZACIÓN vs CREACIÓN
+    final bool isUpdatingExistingOrder = _originalOrderIdBeingEdited != null;
+    final String orderId = isUpdatingExistingOrder
+        ? _originalOrderIdBeingEdited!
+        : 'local_${const Uuid().v4()}';
+
+    debugPrint("[CurrentOrder.saveOrder] ${isUpdatingExistingOrder ? '🔄 ACTUALIZANDO' : '➕ CREANDO NUEVO'} pedido: $orderId");
 
     final orderForQueue = recalculated.copyWith(
-      id: localId,
+      id: orderId,
       isSynced: false,
       date: DateTime.now(),
     );
 
     // 🔴 PASO 1: Actualizar stock local ANTES de encolar
-    await _updateLocalStockImmediately(orderForQueue);
+    if (isUpdatingExistingOrder) {
+      // 🔧 Calcular delta de stock para actualización
+      await _updateStockDelta(orderForQueue);
+    } else {
+      // Nuevo pedido: actualizar stock normalmente
+      await _updateLocalStockImmediately(orderForQueue);
+    }
 
-    await _orderRepository.savePendingOrder(orderForQueue, localId);
+    await _orderRepository.savePendingOrder(orderForQueue, orderId);
 
-    // 🔴 PASO 2: Encolar sincronización (aquí es donde fallaba Hive si había conflictos)
-    _syncManager.addOperation(
-      SyncOperationType.createOrder,
-      {
-        'order': orderForQueue.toJson(),
-        'localId': localId,
-      },
-      priority: SyncPriority.critical,
-      idempotencyKey: 'createOrder_$localId',
-    );
+    // 🔴 PASO 2: Encolar sincronización
+    if (isUpdatingExistingOrder) {
+      // 🔧 Operación de ACTUALIZACIÓN
+      _syncManager.addOperation(
+        SyncOperationType.updateOrder,
+        {
+          'order': orderForQueue.toJson(),
+          'orderId': orderId,
+        },
+        priority: SyncPriority.critical,
+        idempotencyKey: 'updateOrder_$orderId',
+      );
+      debugPrint("[CurrentOrder.saveOrder] ✅ Pedido actualizado encolado: $orderId");
+    } else {
+      // Operación de CREACIÓN
+      _syncManager.addOperation(
+        SyncOperationType.createOrder,
+        {
+          'order': orderForQueue.toJson(),
+          'localId': orderId,
+        },
+        priority: SyncPriority.critical,
+        idempotencyKey: 'createOrder_$orderId',
+      );
+      debugPrint("[CurrentOrder.saveOrder] ✅ Pedido nuevo encolado: $orderId");
+    }
 
     await clearOrder();
-    _setError("Pedido encolado para sincronización.", durationSeconds: 5);
 
-    return localId;
+    final message = isUpdatingExistingOrder
+        ? "Pedido actualizado y encolado para sincronización."
+        : "Pedido encolado para sincronización.";
+    _setError(message, durationSeconds: 5);
+
+    return orderId;
   }
 
   /// Actualizar estado de orden
@@ -810,11 +1089,19 @@ class CurrentOrder extends _$CurrentOrder {
   Future<void> loadOrderForEditing(Order orderToLoad) async {
     debugPrint("[CurrentOrder.loadOrderForEditing] Loading order ID: ${orderToLoad.id ?? 'N/A'} for editing.");
 
+    // 🔄 Resetear timer de inactividad al cargar para edición
+    _resetInactivityTimer();
+
+    // 🔧 Guardar ID original y snapshot de items para tracking de cambios
+    _originalOrderIdBeingEdited = orderToLoad.id;
+    _originalItemsSnapshot = List.from(orderToLoad.items);
+    debugPrint("[CurrentOrder] 📸 Snapshot guardado: ${_originalItemsSnapshot?.length} items del pedido ${_originalOrderIdBeingEdited}");
+
     state = const AsyncValue.loading();
     _saveOrderDebounce?.cancel();
 
     try {
-      await clearOrder();
+      // 🔧 NO llamar a clearOrder() aquí, solo limpiar el estado actual
       final currentState = state.requireValue;
 
       List<OrderItem> itemsToAdd = [];
@@ -872,17 +1159,26 @@ class CurrentOrder extends _$CurrentOrder {
         debugPrint("... Loaded item for editing: ${productDetails.name}");
       }
 
+      // 🔧 Preservar el ID original para actualización, no crear nuevo
+      // Si el pedido original tiene ID válido, lo preservamos
       final loadedOrder = orderToLoad.copyWith(
         items: itemsToAdd,
         date: DateTime.now(),
         isSynced: false,
-        id: hiveCurrentOrderPendingKey,
-        number: null,
-        orderStatus: 'pending',
+        // 🔧 Preservar ID original si existe y no es el key temporal
+        id: (orderToLoad.id != null && orderToLoad.id != hiveCurrentOrderPendingKey)
+            ? orderToLoad.id
+            : hiveCurrentOrderPendingKey,
+        number: orderToLoad.number, // Preservar número de orden
+        orderStatus: orderToLoad.orderStatus == 'draft' ? 'pending' : orderToLoad.orderStatus,
+        customerId: orderToLoad.customerId, // Preservar cliente
+        customerName: orderToLoad.customerName,
       );
 
       final recalculated = _recalculateOrder(loadedOrder, currentState.taxRate);
       await _saveOrderWithDebounce(recalculated, force: true);
+
+      debugPrint("[CurrentOrder] ✅ Pedido cargado para edición. ID original: ${_originalOrderIdBeingEdited}");
 
       state = AsyncValue.data(currentState.copyWith(
         order: recalculated,
@@ -893,6 +1189,9 @@ class CurrentOrder extends _$CurrentOrder {
       ));
     } catch (e, stack) {
       debugPrint("[CurrentOrder.loadOrderForEditing] ERROR: $e\n$stack");
+      // 🔧 Limpiar tracking en caso de error
+      _originalOrderIdBeingEdited = null;
+      _originalItemsSnapshot = null;
       state = AsyncValue.error(e, stack);
     }
   }

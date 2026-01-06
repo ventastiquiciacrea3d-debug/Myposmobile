@@ -22,10 +22,10 @@ import '../utils/pdf_generator.dart';
 
 import '../widgets/order/current_order_item_card.dart';
 import '../widgets/order/history_order_item_card.dart';
-import '../widgets/customer_selection_dialog.dart'; // ✅ FASE 3: Customer selection
+import '../widgets/customer_selection_dialog.dart'; // ✅ Customer selection dialog
 import '../widgets/share_quote_dialog.dart'; // ✅ QUOTE: Share quote dialog
 import '../screens/draft_orders_screen.dart'; // ✅ FASE 3: Draft orders
-import '../models/customer.dart'; // ✅ FASE 3: Customer model
+import '../models/customer.dart'; // ✅ CLIENTES: Customer model
 
 import '../services/woocommerce_service.dart';
 import '../services/storage_service.dart'; // ✅ FASE 3: Para draft orders
@@ -906,36 +906,51 @@ class _OrderScreenState extends ConsumerState<OrderScreen> with TickerProviderSt
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
                               Text("Pedido Actual", style: Theme.of(context).textTheme.titleLarge),
-                              InkWell(
-                                onTap: () async {
-                                  // ✅ FASE 3: Usar CustomerSelectionDialog
-                                  final Customer? selectedCustomer = await showDialog<Customer>(
-                                    context: context,
-                                    builder: (context) => CustomerSelectionDialog(
-                                      selectedCustomer: null, // TODO: Pasar cliente actual
-                                    ),
-                                  );
-
-                                  if (selectedCustomer != null && mounted) {
-                                    ref.read(currentOrderProvider.notifier).updateOrderCustomer(
-                                      selectedCustomer.id.toString(),
-                                      selectedCustomer.name,
-                                    );
-                                  }
-                                },
-                                borderRadius: BorderRadius.circular(8),
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
-                                  child: Row(
-                                    children: [
-                                      const Icon(Icons.person_outline, size: 20),
-                                      const SizedBox(width: 6),
-                                      Text(
-                                        order.customerName ?? 'Cliente General',
-                                        style: const TextStyle(fontWeight: FontWeight.w500),
+                              Flexible(
+                                child: InkWell(
+                                  onTap: () async {
+                                    // ✅ CLIENTES: Usar CustomerSelectionDialog con WooCommerce
+                                    final Customer? selectedCustomer = await showDialog<Customer>(
+                                      context: context,
+                                      builder: (context) => CustomerSelectionDialog(
+                                        selectedCustomer: order.customerId != null && order.customerId!.isNotEmpty
+                                          ? Customer(
+                                              id: int.tryParse(order.customerId!) ?? 0,
+                                              email: '',
+                                              firstName: order.customerName?.split(' ').first ?? '',
+                                              lastName: order.customerName?.split(' ').skip(1).join(' ') ?? '',
+                                            )
+                                          : null,
                                       ),
-                                      const Icon(Icons.arrow_drop_down, size: 20),
-                                    ],
+                                    );
+
+                                    if (selectedCustomer != null && mounted) {
+                                      // Actualizar orden con cliente seleccionado
+                                      ref.read(currentOrderProvider.notifier).updateOrderCustomer(
+                                        selectedCustomer.id.toString(),
+                                        selectedCustomer.name,
+                                      );
+                                    }
+                                  },
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(Icons.person_outline, size: 20),
+                                        const SizedBox(width: 6),
+                                        Flexible(
+                                          child: Text(
+                                            order.customerName ?? 'Cliente General',
+                                            style: const TextStyle(fontWeight: FontWeight.w500),
+                                            overflow: TextOverflow.ellipsis,
+                                            maxLines: 1,
+                                          ),
+                                        ),
+                                        const Icon(Icons.arrow_drop_down, size: 20),
+                                      ],
+                                    ),
                                   ),
                                 ),
                               )
@@ -1047,13 +1062,12 @@ class _OrderScreenState extends ConsumerState<OrderScreen> with TickerProviderSt
     );
   }
 
-  // ✅ FASE 3: Bottom bar mejorado con desglose y botones de borradores
+  // ✅ FASE 3: Bottom bar mejorado con desglose expandible
   Widget _buildBottomActionBar(BuildContext context, Order order, double taxRate) {
     final currencyFormat = NumberFormat.currency(symbol: '₡', decimalDigits: 0);
     return Material(
       elevation: 8,
       child: Container(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
         decoration: BoxDecoration(
           color: Theme.of(context).cardColor,
           border: Border(top: BorderSide(color: Colors.grey.shade300, width: 0.5)),
@@ -1061,94 +1075,125 @@ class _OrderScreenState extends ConsumerState<OrderScreen> with TickerProviderSt
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Botones de acción: Borrador y Cargar
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => _saveDraft(context, order),
-                    icon: const Icon(Icons.save_outlined, size: 18),
-                    label: const Text('Guardar Borrador', style: TextStyle(fontSize: 12)),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 10),
+            // Detalles expandibles (Totales y Borradores)
+            Theme(
+              data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+              child: ExpansionTile(
+                title: Row(
+                  children: [
+                    const Icon(Icons.info_outline, size: 20),
+                    const SizedBox(width: 8),
+                    const Text('Ver detalles', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+                  ],
+                ),
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                    child: Column(
+                      children: [
+                        // Botones de acción: Borrador y Cargar
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () => _saveDraft(context, order),
+                                icon: const Icon(Icons.save_outlined, size: 18),
+                                label: const Text('Guardar Borrador', style: TextStyle(fontSize: 12)),
+                                style: OutlinedButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(vertical: 10),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () => _loadDraft(context),
+                                icon: const Icon(Icons.folder_open, size: 18),
+                                label: const Text('Cargar Borrador', style: TextStyle(fontSize: 12)),
+                                style: OutlinedButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(vertical: 10),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+
+                        const SizedBox(height: 12),
+                        const Divider(height: 1),
+                        const SizedBox(height: 12),
+
+                        // Desglose de cálculos
+                        _buildCalculationRow('Subtotal:', order.subtotal, isSubtotal: true),
+                        if (order.discount > 0)
+                          _buildCalculationRow('Descuento:', -order.discount, isDiscount: true),
+                        _buildCalculationRow('Impuestos (${(taxRate * 100).toStringAsFixed(0)}%):', order.tax, isTax: true),
+                      ],
                     ),
                   ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => _loadDraft(context),
-                    icon: const Icon(Icons.folder_open, size: 18),
-                    label: const Text('Cargar Borrador', style: TextStyle(fontSize: 12)),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 8),
-
-            // ✅ QUOTE: Botón Compartir Cotización
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: order.items.isEmpty ? null : () => _shareQuote(context, order),
-                icon: const Icon(Icons.share, size: 18),
-                label: const Text('Compartir Cotización'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blue.shade600,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                ),
+                ],
               ),
             ),
 
-            const SizedBox(height: 12),
             const Divider(height: 1),
-            const SizedBox(height: 12),
 
-            // Desglose de cálculos
-            _buildCalculationRow('Subtotal:', order.subtotal, isSubtotal: true),
-            if (order.discount > 0)
-              _buildCalculationRow('Descuento:', -order.discount, isDiscount: true),
-            _buildCalculationRow('Impuestos (${(taxRate * 100).toStringAsFixed(0)}%):', order.tax, isTax: true),
-
-            const SizedBox(height: 8),
-            const Divider(thickness: 1.5),
-            const SizedBox(height: 8),
-
-            // Total y botón guardar
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text("TOTAL", style: TextStyle(fontSize: 13, color: Colors.grey, fontWeight: FontWeight.bold)),
-                    Text(
-                      currencyFormat.format(order.total),
-                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        color: Theme.of(context).primaryColor,
+            // Total y botones de acción (siempre visible)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Total
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text("TOTAL", style: TextStyle(fontSize: 13, color: Colors.grey, fontWeight: FontWeight.bold)),
+                      Text(
+                        currencyFormat.format(order.total),
+                        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                          fontWeight: FontWeight.bold,
+                          color: Theme.of(context).primaryColor,
+                        ),
                       ),
-                    ),
-                  ],
-                ),
-                ElevatedButton.icon(
-                  onPressed: () => _showSaveOrderConfirmationDialog(context),
-                  icon: const Icon(Icons.check_circle_outline),
-                  label: const Text("FINALIZAR"),
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-                    textStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                    ],
                   ),
-                ),
-              ],
+
+                  const SizedBox(height: 12),
+
+                  // Botones de acción en una barra horizontal
+                  Row(
+                    children: [
+                      // Botón Compartir
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: order.items.isEmpty ? null : () => _shareQuote(context, order),
+                          icon: const Icon(Icons.share, size: 18),
+                          label: const Text('Compartir', style: TextStyle(fontSize: 14)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.blue.shade600,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      // Botón Finalizar
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: order.items.isEmpty ? null : () => _showSaveOrderConfirmationDialog(context),
+                          icon: const Icon(Icons.check_circle_outline, size: 18),
+                          label: const Text("FINALIZAR", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
           ],
         ),

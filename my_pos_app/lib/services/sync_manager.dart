@@ -176,6 +176,10 @@ class SyncManager extends ChangeNotifier {
         final localId = data['localId'];
         keyBase += localId ?? data.hashCode.toString();
         break;
+      case SyncOperationType.updateOrder:
+      // 🔧 NUEVO: Para actualizar pedidos completos, usar orderId
+        keyBase += data['orderId']?.toString() ?? data.hashCode.toString();
+        break;
       case SyncOperationType.updateOrderStatus:
       // Para actualizaciones, usar orderId + newStatus
         keyBase += '${data['orderId']}_${data['newStatus']}';
@@ -376,6 +380,8 @@ class SyncManager extends ChangeNotifier {
     switch (type) {
       case SyncOperationType.createOrder:
         return "Crear Pedido";
+      case SyncOperationType.updateOrder:
+        return "Actualizar Pedido";  // 🔧 NUEVO
       case SyncOperationType.updateOrderStatus:
         return "Actualizar Estado";
       case SyncOperationType.inventoryAdjustment:
@@ -408,6 +414,22 @@ class SyncManager extends ChangeNotifier {
           }
         } else {
           throw ApiException("El servidor no devolvió un ID para el pedido creado.");
+        }
+        break;
+
+      case SyncOperationType.updateOrder:
+        // 🔧 NUEVO: Actualizar pedido completo en WooCommerce
+        final updateOrderData = data['order'];
+        if (updateOrderData is! Map) {
+          throw Exception("operation.data['order'] no es un Map válido");
+        }
+        final orderToUpdate = Order.fromJson(Map<String, dynamic>.from(updateOrderData as Map));
+        await _wooCommerceService.updateOrderAPI(orderToUpdate);
+
+        // Actualizar pedido local tras sincronización exitosa
+        final orderId = data['orderId'];
+        if (orderId != null) {
+          debugPrint("[SyncManager] ✓ Order $orderId updated successfully in WooCommerce");
         }
         break;
 

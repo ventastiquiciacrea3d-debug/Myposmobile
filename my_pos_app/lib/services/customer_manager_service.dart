@@ -3,12 +3,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import '../models/customer_model.dart';
 import 'local_database_service.dart';
-import 'woocommerce_customer_service.dart';
+import 'woocommerce_service.dart';
 
 /// Servicio integrado para gestionar clientes desde múltiples fuentes
 class CustomerManagerService extends ChangeNotifier {
   final LocalDatabaseService _localDb;
-  final WooCommerceCustomerService _wooService;
+  final WooCommerceService _wooService;
 
   // Estado
   List<CustomerModel> _customers = [];
@@ -18,7 +18,7 @@ class CustomerManagerService extends ChangeNotifier {
 
   CustomerManagerService({
     required LocalDatabaseService localDb,
-    required WooCommerceCustomerService wooService,
+    required WooCommerceService wooService,
   })  : _localDb = localDb,
         _wooService = wooService;
 
@@ -45,9 +45,17 @@ class CustomerManagerService extends ChangeNotifier {
 
       if (shouldSync) {
         try {
-          final wooCustomers = await _wooService.getAllCustomers(
-            forceRefresh: true,
+          // Obtener clientes desde el endpoint personalizado /mypos/v1/customers
+          final wooCustomersRaw = await _wooService.getCustomers(
+            perPage: 100,
+            orderBy: 'registered_date',
+            order: 'desc',
           );
+
+          // Convertir de Map a CustomerModel
+          final wooCustomers = wooCustomersRaw
+              .map((json) => CustomerModel.fromWooCommerce(json))
+              .toList();
 
           // Sincronizar con base de datos local
           await _localDb.syncCustomersFromWooCommerce(wooCustomers);
@@ -55,6 +63,8 @@ class CustomerManagerService extends ChangeNotifier {
           // Recargar desde local después de sincronizar
           _customers = await _localDb.getAllCustomers();
           _lastSync = DateTime.now();
+
+          debugPrint('[CustomerManager] ✅ Sincronizados ${wooCustomers.length} clientes desde WooCommerce');
         } catch (e) {
           debugPrint('[CustomerManager] Error sincronizando con WooCommerce: $e');
           // Si falla WooCommerce, usar datos locales
@@ -89,7 +99,12 @@ class CustomerManagerService extends ChangeNotifier {
 
       // Buscar también en WooCommerce
       try {
-        final wooResults = await _wooService.searchCustomers(query);
+        final wooResultsRaw = await _wooService.searchCustomersAPI(query);
+
+        // Convertir de Map a CustomerModel
+        final wooResults = wooResultsRaw
+            .map((json) => CustomerModel.fromWooCommerce(json))
+            .toList();
 
         // Combinar resultados, evitando duplicados por email
         final combined = <String, CustomerModel>{};
@@ -118,9 +133,38 @@ class CustomerManagerService extends ChangeNotifier {
   /// Obtener clientes recientes
   Future<List<CustomerModel>> getRecentCustomers({int limit = 10}) async {
     try {
-      return await _localDb.getRecentCustomers(limit: limit);
+      // 🔧 FIX: SIEMPRE intentar cargar desde WooCommerce primero para obtener datos actualizados
+      try {
+        debugPrint('[CustomerManager] Cargando últimos $limit clientes desde WooCommerce...');
+        final wooCustomersRaw = await _wooService.getRecentCustomers(limit: limit);
+
+        // Convertir de Map a CustomerModel
+        final wooCustomers = wooCustomersRaw
+            .map((json) => CustomerModel.fromWooCommerce(json))
+            .toList();
+
+        // Guardar en base de datos local para futuras consultas
+        for (final customer in wooCustomers) {
+          await _localDb.saveCustomer(customer);
+        }
+
+        debugPrint('[CustomerManager] ✅ Cargados ${wooCustomers.length} clientes desde WooCommerce');
+        return wooCustomers;
+      } catch (e) {
+        // Si falla WooCommerce (sin conexión, etc), usar datos locales como fallback
+        debugPrint('[CustomerManager] Error cargando desde WooCommerce: $e. Usando datos locales...');
+        final localRecents = await _localDb.getRecentCustomers(limit: limit);
+
+        if (localRecents.isNotEmpty) {
+          debugPrint('[CustomerManager] ⚠️ Usando ${localRecents.length} clientes locales (offline)');
+          return localRecents;
+        }
+
+        debugPrint('[CustomerManager] ❌ No hay clientes disponibles (ni online ni offline)');
+        return [];
+      }
     } catch (e) {
-      debugPrint('[CustomerManager] Error obteniendo recientes: $e');
+      debugPrint('[CustomerManager] Error crítico obteniendo recientes: $e');
       return [];
     }
   }
@@ -134,7 +178,11 @@ class CustomerManagerService extends ChangeNotifier {
       // Intentar subir a WooCommerce si tiene email válido
       if (customer.email.isNotEmpty && customer.email.contains('@')) {
         try {
-          final wooCustomer = await _wooService.createCustomer(customer);
+          final customerData = customer.toWooCommerceJson();
+          final wooCustomerRaw = await _wooService.createCustomer(customerData);
+
+          // Convertir respuesta a CustomerModel
+          final wooCustomer = CustomerModel.fromWooCommerce(wooCustomerRaw);
 
           // Actualizar con ID de WooCommerce
           await _localDb.markCustomerAsSynced(
@@ -145,6 +193,7 @@ class CustomerManagerService extends ChangeNotifier {
           // Recargar clientes
           await loadAllCustomers();
 
+          debugPrint('[CustomerManager] ✅ Cliente creado y sincronizado con WooCommerce: ${wooCustomer.email}');
           return wooCustomer;
         } catch (e) {
           debugPrint('[CustomerManager] Error subiendo a WooCommerce: $e');
@@ -170,13 +219,9 @@ class CustomerManagerService extends ChangeNotifier {
       // Actualizar localmente
       await _localDb.saveCustomer(customer);
 
-      // Si tiene ID de WooCommerce, actualizar allá también
+      // TODO: Implementar actualización en WooCommerce cuando el endpoint esté disponible
       if (customer.id != null && customer.isSyncedWithWoo) {
-        try {
-          await _wooService.updateCustomer(customer);
-        } catch (e) {
-          debugPrint('[CustomerManager] Error actualizando en WooCommerce: $e');
-        }
+        debugPrint('[CustomerManager] ⚠️ Actualización de clientes solo local (endpoint de WooCommerce no disponible)');
       }
 
       // Recargar clientes
@@ -193,13 +238,9 @@ class CustomerManagerService extends ChangeNotifier {
   /// Eliminar cliente
   Future<bool> deleteCustomer(CustomerModel customer) async {
     try {
-      // Eliminar de WooCommerce si está sincronizado
+      // TODO: Implementar eliminación en WooCommerce cuando el endpoint esté disponible
       if (customer.id != null && customer.isSyncedWithWoo) {
-        try {
-          await _wooService.deleteCustomer(customer.id!, force: true);
-        } catch (e) {
-          debugPrint('[CustomerManager] Error eliminando de WooCommerce: $e');
-        }
+        debugPrint('[CustomerManager] ⚠️ Eliminación de clientes solo local (endpoint de WooCommerce no disponible)');
       }
 
       // Eliminar localmente
@@ -270,11 +311,16 @@ class CustomerManagerService extends ChangeNotifier {
       // Intentar sincronizar con WooCommerce si tiene email
       if (customer.email.isNotEmpty && customer.email.contains('@')) {
         try {
-          final wooCustomer = await _wooService.createCustomer(customer);
+          final customerData = customer.toWooCommerceJson();
+          final wooCustomerRaw = await _wooService.createCustomer(customerData);
+          final wooCustomer = CustomerModel.fromWooCommerce(wooCustomerRaw);
+
           await _localDb.markCustomerAsSynced(
             customer.id ?? 0,
             wooCustomer.id!,
           );
+
+          debugPrint('[CustomerManager] ✅ Contacto importado y sincronizado: ${wooCustomer.email}');
         } catch (e) {
           debugPrint('[CustomerManager] No se pudo sincronizar con WooCommerce: $e');
         }
@@ -328,11 +374,12 @@ class CustomerManagerService extends ChangeNotifier {
       if (customer.address != null && customer.address!.isNotEmpty) {
         contact.addresses = [
           Address(
-            address: customer.address!,
-            city: customer.city,
-            state: customer.state,
-            postalCode: customer.postcode,
-            country: customer.country,
+            customer.address!,
+            label: AddressLabel.work,
+            city: customer.city ?? '',
+            state: customer.state ?? '',
+            postalCode: customer.postcode ?? '',
+            country: customer.country ?? '',
           ),
         ];
       }
@@ -355,7 +402,9 @@ class CustomerManagerService extends ChangeNotifier {
 
       for (final customer in unsynced) {
         try {
-          final wooCustomer = await _wooService.createCustomer(customer);
+          final customerData = customer.toWooCommerceJson();
+          final wooCustomerRaw = await _wooService.createCustomer(customerData);
+          final wooCustomer = CustomerModel.fromWooCommerce(wooCustomerRaw);
 
           await _localDb.markCustomerAsSynced(
             customer.id ?? 0,
@@ -370,6 +419,7 @@ class CustomerManagerService extends ChangeNotifier {
 
       if (synced > 0) {
         await loadAllCustomers();
+        debugPrint('[CustomerManager] ✅ Sincronizados $synced clientes no sincronizados');
       }
 
       return synced;
@@ -379,9 +429,10 @@ class CustomerManagerService extends ChangeNotifier {
     }
   }
 
-  /// Limpiar cache de WooCommerce
+  /// Limpiar cache de WooCommerce (no aplicable con nuevo servicio)
   void clearWooCommerceCache() {
-    _wooService.clearCache();
+    // Cache ahora manejado por WooCommerceService
+    debugPrint('[CustomerManager] Cache manejado por WooCommerceService');
   }
 
   /// Obtener estadísticas

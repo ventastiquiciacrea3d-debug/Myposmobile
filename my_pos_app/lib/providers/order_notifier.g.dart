@@ -22,7 +22,7 @@ final orderSummaryProvider = AutoDisposeProvider<OrderSummary>.internal(
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
 typedef OrderSummaryRef = AutoDisposeProviderRef<OrderSummary>;
-String _$currentOrderHash() => r'392aedf441389c5f6f8711a57dde4adb898d4866';
+String _$currentOrderHash() => r'91ab18b78145cc8490bd94120433ac20149d9eb7';
 
 /// Notifier para la orden actual
 ///

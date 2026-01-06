@@ -59,6 +59,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   // 🟢 NUEVO: Configuración de sincronización de inventario externo
   bool _autoSyncProductsEnabled = true;
   int _productsSyncIntervalSeconds = 300; // Default: 5 minutos
+  // 🟢 NUEVO: Configuración de auto-guardado de borradores
+  int _draftInactivityMinutes = 10; // Default: 10 minutos
   late final SyncManager _syncManager;
   final Color _inactiveTrackColor = Colors.grey.shade300;
   final Color _inactiveThumbColor = Colors.grey.shade500;
@@ -116,6 +118,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       // 🟢 NUEVO: Cargar configuración de sincronización de inventario
       _autoSyncProductsEnabled = prefs.getBool(autoSyncProductsPrefKey) ?? true;
       _productsSyncIntervalSeconds = prefs.getInt(productsSyncIntervalPrefKey) ?? 300;
+      // 🟢 NUEVO: Cargar configuración de auto-guardado de borradores
+      _draftInactivityMinutes = prefs.getInt(draftInactivityMinutesPrefKey) ?? 10;
     });
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -513,6 +517,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               prefs: prefs, individualDiscountsEnabled: _individualDiscountsEnabled,
               inactiveTrackColor: _inactiveTrackColor, inactiveThumbColor: _inactiveThumbColor,
               onDiscountsChanged: (v) async { if(mounted) setState(() => _individualDiscountsEnabled = v); await prefs.setBool(individualDiscountsEnabledPrefKey, v); },
+            ),
+                // ✅ ORDER SETTINGS: Configuración de pedidos
+                (ctx, sm) => _OrderSettingsSection(
+              prefs: prefs,
+              draftInactivityMinutes: _draftInactivityMinutes,
+              inactiveTrackColor: _inactiveTrackColor,
+              inactiveThumbColor: _inactiveThumbColor,
+              onDraftInactivityChanged: (v) async {
+                if(mounted) setState(() => _draftInactivityMinutes = v);
+                await prefs.setInt(draftInactivityMinutesPrefKey, v);
+              },
             ),
                 // ✅ QUOTE SETTINGS: Configuración de cotizaciones
                 (ctx, sm) => QuoteSettingsSection(
@@ -1036,6 +1051,78 @@ class _DiscountSettingsSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Card( elevation: 1, shape: RoundedRectangleBorder( borderRadius: BorderRadius.circular(8), ), child: Padding( padding: const EdgeInsets.all(16), child: Column( crossAxisAlignment: CrossAxisAlignment.start, children: [ Row( children: const [ Icon(Icons.sell_outlined), SizedBox(width: 8), Text( 'Descuentos', style: TextStyle( fontSize: 18, fontWeight: FontWeight.bold, ), ), ], ), const SizedBox(height: 8), SwitchListTile( title: const Text('Permitir descuentos por producto'), subtitle: const Text('Habilita aplicar dcto. manual en cada línea'), value: individualDiscountsEnabled, inactiveTrackColor: inactiveTrackColor, inactiveThumbColor: inactiveThumbColor, onChanged: onDiscountsChanged, contentPadding: EdgeInsets.zero, ), ], ), ), );
+  }
+}
+
+class _OrderSettingsSection extends StatelessWidget {
+  final SharedPreferences prefs;
+  final int draftInactivityMinutes;
+  final Color inactiveTrackColor;
+  final Color inactiveThumbColor;
+  final ValueChanged<int> onDraftInactivityChanged;
+
+  const _OrderSettingsSection({
+    required this.prefs,
+    required this.draftInactivityMinutes,
+    required this.inactiveTrackColor,
+    required this.inactiveThumbColor,
+    required this.onDraftInactivityChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 1,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: const [
+                Icon(Icons.receipt_long),
+                SizedBox(width: 8),
+                Text(
+                  'Pedidos y Borradores',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            ListTile(
+              title: const Text('Tiempo de inactividad para auto-guardar'),
+              subtitle: Text('Guarda pedido como borrador después de $draftInactivityMinutes minutos sin actividad'),
+              contentPadding: EdgeInsets.zero,
+            ),
+            Wrap(
+              spacing: 8,
+              children: [5, 10, 15, 20].map((minutes) {
+                final isSelected = draftInactivityMinutes == minutes;
+                return ChoiceChip(
+                  label: Text('$minutes min'),
+                  selected: isSelected,
+                  onSelected: (_) => onDraftInactivityChanged(minutes),
+                  selectedColor: Theme.of(context).primaryColor.withOpacity(0.2),
+                  labelStyle: TextStyle(
+                    color: isSelected ? Theme.of(context).primaryColor : null,
+                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                  ),
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Los borradores antiguos (más de 24h) se eliminan automáticamente',
+              style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
