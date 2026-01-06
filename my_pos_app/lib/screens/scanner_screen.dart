@@ -298,10 +298,10 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
 
     // ✅ FIX v2.1: Usar clearProductFoundState() que ahora verifica y reinicia la cámara
     if (mounted && !_isCameraPausedManually) {
-      Future.delayed(const Duration(milliseconds: 300), () async {
+      Future.delayed(const Duration(milliseconds: 300), () {
         if (mounted && !_isDialogOpen && !_isCameraPausedManually) {
           debugPrint("[ScannerScreen] ✅ Limpiando estado y verificando cámara...");
-          await ref.read(scannerProvider.notifier).clearProductFoundState();
+          ref.read(scannerProvider.notifier).clearProductFoundState();
         }
       });
     }
@@ -355,8 +355,8 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
 
     final scannerNotifier = ref.read(scannerProvider.notifier);
 
-    // Usar el nuevo método closeScanner() que fuerza viewState a initial
-    await scannerNotifier.closeScanner();
+    // Resetear el scanner
+    await scannerNotifier.resetScanner();
 
     if (mounted) {
       setState(() {
