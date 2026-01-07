@@ -334,9 +334,10 @@ class CustomerManagerService extends ChangeNotifier {
         debugPrint('[CustomerManager] ℹ️ Contacto sin email válido, no se sincroniza con WooCommerce');
       }
 
-      // Recargar
-      debugPrint('[CustomerManager] Recargando lista de clientes...');
-      await loadAllCustomers();
+      // ✅ FIX: NO recargar desde WooCommerce - solo notificar cambios
+      debugPrint('[CustomerManager] Actualizando lista local de clientes...');
+      _customers = await _localDb.getAllCustomers();
+      notifyListeners();
       debugPrint('[CustomerManager] ✅ Importación de contacto completada exitosamente');
       return customer;
     } catch (e, stackTrace) {
