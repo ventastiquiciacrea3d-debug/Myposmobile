@@ -23,6 +23,7 @@ class CustomerState with _$CustomerState {
 
   factory CustomerState.initial() => const CustomerState();
 
+  /// Clientes a mostrar: últimos 10 recientes si no hay búsqueda, resultados de búsqueda si hay query
   List<Map<String, dynamic>> get displayCustomers =>
       currentSearchQuery.isEmpty ? recentCustomers : searchResults;
 

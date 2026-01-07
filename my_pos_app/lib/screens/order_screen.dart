@@ -19,6 +19,7 @@ import '../widgets/custom_fab_location.dart';
 import '../config/constants.dart';
 import '../config/routes.dart';
 import '../utils/pdf_generator.dart';
+import '../utils/string_helpers.dart'; // ✅ MEJORA: Helper para truncar nombres
 
 import '../widgets/order/current_order_item_card.dart';
 import '../widgets/order/history_order_item_card.dart';
@@ -942,7 +943,7 @@ class _OrderScreenState extends ConsumerState<OrderScreen> with TickerProviderSt
                                         const SizedBox(width: 6),
                                         Flexible(
                                           child: Text(
-                                            order.customerName ?? 'Cliente General',
+                                            getDisplayName(order.customerName, maxLength: 18), // ✅ MEJORA: Nombre truncado inteligente
                                             style: const TextStyle(fontWeight: FontWeight.w500),
                                             overflow: TextOverflow.ellipsis,
                                             maxLines: 1,

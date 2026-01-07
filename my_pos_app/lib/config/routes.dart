@@ -13,8 +13,8 @@ import '../screens/settings_screen.dart';
 import '../screens/splash_screen.dart';
 import '../screens/thermal_printing_screen.dart';
 import '../screens/customer_search_screen.dart';
-// import '../screens/product_catalog_screen.dart';
-// import '../screens/product_detail_screen.dart';
+import '../screens/product_catalog_screen.dart';
+import '../screens/product_detail_screen.dart';
 
 
 class Routes {
@@ -53,14 +53,14 @@ class Routes {
         final args = ModalRoute.of(context)?.settings.arguments as InventoryAdjustmentFormScreenArguments?;
         return InventoryAdjustmentFormScreen(arguments: args);
       },
-      // productCatalog: (context) {
-      //   final args = ModalRoute.of(context)?.settings.arguments as CatalogScreenArguments?;
-      //   return ProductCatalogScreen(arguments: args);
-      // },
-      // productDetail: (context) {
-      //   final productId = ModalRoute.of(context)!.settings.arguments as String;
-      //   return ProductDetailScreen(productId: productId);
-      // },
+      productCatalog: (context) {
+        final args = ModalRoute.of(context)?.settings.arguments as CatalogScreenArguments?;
+        return ProductCatalogScreen(arguments: args);
+      },
+      productDetail: (context) {
+        final productId = ModalRoute.of(context)!.settings.arguments as String;
+        return ProductDetailScreen(productId: productId);
+      },
     };
   }
 

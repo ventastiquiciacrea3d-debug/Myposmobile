@@ -152,27 +152,31 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
       backgroundColor: Colors.transparent,
       builder: (context) => AddToCartDialog(productId: product.id),
     ).whenComplete(() {
-      debugPrint("[ScannerScreen] Bottom sheet closed - RESUMING scanner");
+      debugPrint("[ScannerScreen] Bottom sheet closed - RESETTING and RESUMING scanner");
 
       // ✅ FIX: Resetear banderas cuando el diálogo se cierra
-      _isShowingProductDialog = false;
-      _lastProcessedProductId = null; // Permitir escanear el mismo producto nuevamente
+      if (mounted) {
+        setState(() {
+          _isShowingProductDialog = false;
+          _lastProcessedProductId = null; // Permitir escanear el mismo producto nuevamente
+        });
+      }
 
-      // ✅ MEJORA: Reanudar la cámara después de un delay para evitar pantalla en blanco
+      // ✅ MEJORA: Hacer reset completo del scanner para permitir nuevos escaneos
       if (mounted && !_isCameraPausedManually) {
-        Future.delayed(const Duration(milliseconds: 300), () {
-          if (mounted && scannerController != null && !_isCameraPausedManually) {
+        Future.delayed(const Duration(milliseconds: 500), () async {
+          if (mounted && !_isCameraPausedManually) {
             try {
-              scannerController.start();
-              debugPrint("[ScannerScreen] ✅ Camera resumed successfully");
+              debugPrint("[ScannerScreen] 🔄 Doing full scanner reset...");
+              await scannerNotifier.resetScanner();
+              await Future.delayed(const Duration(milliseconds: 200));
+
+              if (mounted && !_isCameraPausedManually) {
+                await scannerNotifier.startScanner();
+                debugPrint("[ScannerScreen] ✅ Scanner reset and restarted successfully");
+              }
             } catch (e) {
-              debugPrint("[ScannerScreen] ⚠️ Error resuming camera: $e");
-              // Si falla, hacer reset completo
-              scannerNotifier.resetScanner().then((_) {
-                if (mounted && !_isCameraPausedManually) {
-                  scannerNotifier.startScanner();
-                }
-              });
+              debugPrint("[ScannerScreen] ⚠️ Error resetting scanner: $e");
             }
           }
         });
@@ -203,11 +207,7 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> with WidgetsBindi
         case AppLifecycleState.inactive:
         case AppLifecycleState.paused:
         case AppLifecycleState.hidden:
-          // ✅ FIX: NO resetear si ya fue pausado manualmente
-          if (scannerState.isCameraActive && !_isCameraPausedManually) {
-            debugPrint("[ScannerScreen] App lifecycle pause - stopping camera");
-            ref.read(scannerProvider.notifier).resetScanner();
-          }
+          if (scannerState.isCameraActive) ref.read(scannerProvider.notifier).resetScanner();
           break;
         case AppLifecycleState.detached:
           break;
@@ -905,10 +905,10 @@ class _ScannerView extends ConsumerWidget {
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 ),
                 onPressed: () async {
-                  // ✅ FIX: Establecer pausa manual ANTES de resetear
-                  setState(() => _isCameraPausedManually = true);
+                  // ✅ FIX: Solo cerrar la cámara y volver a modo búsqueda manual
+                  // NO salir de la pantalla del scanner
                   await scannerNotifier.resetScanner();
-                  debugPrint("[ScannerScreen] 🔴 Cámara cerrada manualmente");
+                  debugPrint("[ScannerScreen] 🔴 Cámara cerrada - volviendo a modo búsqueda manual");
                 },
               ),
             ],

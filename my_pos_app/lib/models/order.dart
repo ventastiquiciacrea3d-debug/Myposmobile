@@ -22,6 +22,10 @@ class Order extends HiveObject {
   @HiveField(10) final String orderStatus;
   @HiveField(11) final bool isSynced; // True si el pedido está sincronizado/existe en el servidor
 
+  // ✅ MEJORA PUNTO 2: Campos para edición de pedidos (no persisten en Hive, solo en memoria)
+  final bool isEditing;           // Indica si es una edición de pedido existente
+  final String? originalOrderId;  // ID del pedido original en WooCommerce
+
   Order({
     required this.items,
     required this.subtotal,
@@ -35,6 +39,8 @@ class Order extends HiveObject {
     this.number,
     this.customerId,
     required this.customerName,
+    this.isEditing = false,        // ✅ Default: no es edición
+    this.originalOrderId,           // ✅ Default: null
   });
 
   String? get orderNumber => number;
@@ -53,6 +59,8 @@ class Order extends HiveObject {
     DateTime? date,
     String? orderStatus,
     bool? isSynced,
+    bool? isEditing,            // ✅ MEJORA PUNTO 2
+    String? originalOrderId,    // ✅ MEJORA PUNTO 2
   }) {
     return Order(
       id: id ?? this.id,
@@ -67,6 +75,8 @@ class Order extends HiveObject {
       date: date ?? this.date,
       orderStatus: orderStatus ?? this.orderStatus,
       isSynced: isSynced ?? this.isSynced,
+      isEditing: isEditing ?? this.isEditing,                // ✅ MEJORA PUNTO 2
+      originalOrderId: originalOrderId ?? this.originalOrderId, // ✅ MEJORA PUNTO 2
     );
   }
 
@@ -145,10 +155,25 @@ class Order extends HiveObject {
   Map<String, dynamic> toJson({bool forUpdate = false}) {
     Map<String, dynamic> jsonMap = {};
 
-    if (forUpdate) { // Para actualizar un pedido existente (ej. solo estado)
+    if (forUpdate) {
+      // ✅ MEJORA PUNTO 3: Actualizar pedido existente incluyendo line_items modificados
       jsonMap['status'] = orderStatus;
-      // Se podrían añadir más campos si la API permite actualizarlos (ej. line_items, customer_id)
-      // Si se actualizan line_items, se debe enviar el 'id' de la línea de ítem si existe.
+
+      // ✅ CRÍTICO: Incluir line_items para actualización de pedidos
+      // WooCommerce requiere los IDs de las líneas existentes para actualizarlas
+      jsonMap['line_items'] = items.map((i) => i.toJson(forUpdate: true)).toList();
+
+      // Actualizar customer_id si cambió y es válido
+      if (customerId != null && customerId!.isNotEmpty && customerId != '0' && !customerId!.startsWith('local_')) {
+        jsonMap['customer_id'] = int.tryParse(customerId!) ?? 0;
+      }
+
+      // Actualizar información de facturación si el nombre cambió
+      jsonMap['billing'] = {
+        'first_name': customerName.split(' ').first,
+        'last_name': customerName.split(' ').length > 1 ? customerName.split(' ').sublist(1).join(' ') : '',
+      };
+
     } else { // Para crear un nuevo pedido
       // Establecer customer_id si es un cliente registrado
       if (customerId != null && customerId!.isNotEmpty && customerId != '0' && !customerId!.startsWith('local_')) {
