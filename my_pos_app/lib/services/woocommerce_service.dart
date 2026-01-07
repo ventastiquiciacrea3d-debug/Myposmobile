@@ -1604,7 +1604,7 @@ class WooCommerceService {
         'wp-json/wc/v3/customers',
         queryParameters: {
           'per_page': limit,
-          'orderby': 'date',
+          'orderby': 'registered_date', // ✅ FIX: Cambiar 'date' a 'registered_date' (válido en WC API)
           'order': 'desc',
         },
       );

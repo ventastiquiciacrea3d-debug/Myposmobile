@@ -964,7 +964,9 @@ class CurrentOrder extends _$CurrentOrder {
     final recalculated = _recalculateOrder(orderToProcess, currentState.taxRate);
 
     // 🔧 DETECCIÓN DE ACTUALIZACIÓN vs CREACIÓN
-    final bool isUpdatingExistingOrder = _originalOrderIdBeingEdited != null;
+    // ✅ FIX: Solo considerar UPDATE si el ID original NO es local
+    final bool isUpdatingExistingOrder = _originalOrderIdBeingEdited != null &&
+                                          !_originalOrderIdBeingEdited!.startsWith('local_');
     final String orderId = isUpdatingExistingOrder
         ? _originalOrderIdBeingEdited!
         : 'local_${const Uuid().v4()}';
@@ -1092,17 +1094,20 @@ class CurrentOrder extends _$CurrentOrder {
     // 🔄 Resetear timer de inactividad al cargar para edición
     _resetInactivityTimer();
 
-    // 🔧 Guardar ID original y snapshot de items para tracking de cambios
-    _originalOrderIdBeingEdited = orderToLoad.id;
-    _originalItemsSnapshot = List.from(orderToLoad.items);
-    debugPrint("[CurrentOrder] 📸 Snapshot guardado: ${_originalItemsSnapshot?.length} items del pedido ${_originalOrderIdBeingEdited}");
-
-    state = const AsyncValue.loading();
     _saveOrderDebounce?.cancel();
 
     try {
-      // 🔧 NO llamar a clearOrder() aquí, solo limpiar el estado actual
-      final currentState = state.requireValue;
+      // ✅ MEJORA PUNTO 2: Guardar pedido actual como borrador si tiene items
+      final currentState = state.value;
+      if (currentState?.order != null && (currentState!.order!.items.isNotEmpty)) {
+        await _autoSaveAsDraft();
+      }
+
+      // ✅ Establecer loading DESPUÉS de guardar el draft para no perder el estado
+      state = const AsyncValue.loading();
+
+      // Obtener currentState para taxRate (usar valor por defecto si no está disponible)
+      final taxRate = currentState?.taxRate ?? 0.13;
 
       List<OrderItem> itemsToAdd = [];
       String errorDetails = "";
@@ -1119,12 +1124,13 @@ class CurrentOrder extends _$CurrentOrder {
 
       Map<String, app_product.Product> productsMap = {};
       try {
-        productsMap = await _productRepository.getProductsByIds(productIds, forceApi: true);
-        debugPrint("[CurrentOrder.loadOrderForEditing] Batch loaded ${productsMap.length}/${productIds.length} products");
+        // ✅ FIX: Usar caché local en lugar de forceApi para evitar timeouts
+        productsMap = await _productRepository.getProductsByIds(productIds, forceApi: false);
+        debugPrint("[CurrentOrder.loadOrderForEditing] Batch loaded ${productsMap.length}/${productIds.length} products from cache");
       } catch (e) {
-        debugPrint("[CurrentOrder.loadOrderForEditing] Batch load error: $e. Falling back to individual loads.");
+        debugPrint("[CurrentOrder.loadOrderForEditing] Batch load error: $e. Using original order data.");
         errorAddingItems = true;
-        errorDetails = "Error al cargar productos en batch. ";
+        errorDetails = "No se pudieron cargar algunos productos. ";
       }
 
       for (final item in orderToLoad.items) {
@@ -1159,6 +1165,10 @@ class CurrentOrder extends _$CurrentOrder {
         debugPrint("... Loaded item for editing: ${productDetails.name}");
       }
 
+      // ✅ MEJORA PUNTO 2: Guardar snapshot de items originales y tracking ID
+      _originalItemsSnapshot = List<OrderItem>.from(orderToLoad.items);
+      _originalOrderIdBeingEdited = orderToLoad.id;
+
       // 🔧 Preservar el ID original para actualización, no crear nuevo
       // Si el pedido original tiene ID válido, lo preservamos
       final loadedOrder = orderToLoad.copyWith(
@@ -1173,15 +1183,19 @@ class CurrentOrder extends _$CurrentOrder {
         orderStatus: orderToLoad.orderStatus == 'draft' ? 'pending' : orderToLoad.orderStatus,
         customerId: orderToLoad.customerId, // Preservar cliente
         customerName: orderToLoad.customerName,
+        isEditing: true,                      // ✅ MEJORA PUNTO 2: Marca como edición
+        originalOrderId: orderToLoad.id,      // ✅ MEJORA PUNTO 2: Referencia al original
       );
 
-      final recalculated = _recalculateOrder(loadedOrder, currentState.taxRate);
+      final recalculated = _recalculateOrder(loadedOrder, taxRate);
       await _saveOrderWithDebounce(recalculated, force: true);
 
       debugPrint("[CurrentOrder] ✅ Pedido cargado para edición. ID original: ${_originalOrderIdBeingEdited}");
 
-      state = AsyncValue.data(currentState.copyWith(
+      // Crear nuevo estado con la orden cargada
+      state = AsyncValue.data(CurrentOrderState(
         order: recalculated,
+        taxRate: taxRate,
         isLoading: false,
         error: errorAddingItems
             ? 'Pedido cargado para edición. Algunos detalles de productos no pudieron actualizarse desde el servidor: ${errorDetails.trim()}'

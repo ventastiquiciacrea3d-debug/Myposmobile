@@ -468,6 +468,7 @@ class Scanner extends _$Scanner {
           errorMessage: product == null
               ? "Producto no encontrado para el código '$foundCode'."
               : null,
+          isProcessingBarcode: false, // ✅ FIX: Liberar bandera para permitir siguiente escaneo
         );
       }
     } catch (e) {
