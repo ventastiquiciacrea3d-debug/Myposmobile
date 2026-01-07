@@ -305,11 +305,17 @@ class CustomerManagerService extends ChangeNotifier {
   /// Importar contacto del dispositivo como cliente
   Future<CustomerModel?> importFromDeviceContact(CustomerModel customer) async {
     try {
+      debugPrint('[CustomerManager] 📥 Iniciando importación de contacto: ${customer.fullName}');
+      debugPrint('[CustomerManager] Email: ${customer.email}, Teléfono: ${customer.phone}');
+
       // Guardar en base de datos local
+      debugPrint('[CustomerManager] Guardando en base de datos local...');
       await _localDb.saveCustomer(customer);
+      debugPrint('[CustomerManager] ✅ Guardado en BD local exitoso');
 
       // Intentar sincronizar con WooCommerce si tiene email
       if (customer.email.isNotEmpty && customer.email.contains('@')) {
+        debugPrint('[CustomerManager] Intentando sincronizar con WooCommerce...');
         try {
           final customerData = customer.toWooCommerceJson();
           final wooCustomerRaw = await _wooService.createCustomer(customerData);
@@ -322,18 +328,23 @@ class CustomerManagerService extends ChangeNotifier {
 
           debugPrint('[CustomerManager] ✅ Contacto importado y sincronizado: ${wooCustomer.email}');
         } catch (e) {
-          debugPrint('[CustomerManager] No se pudo sincronizar con WooCommerce: $e');
+          debugPrint('[CustomerManager] ⚠️ No se pudo sincronizar con WooCommerce: $e');
         }
+      } else {
+        debugPrint('[CustomerManager] ℹ️ Contacto sin email válido, no se sincroniza con WooCommerce');
       }
 
       // Recargar
+      debugPrint('[CustomerManager] Recargando lista de clientes...');
       await loadAllCustomers();
+      debugPrint('[CustomerManager] ✅ Importación de contacto completada exitosamente');
       return customer;
-    } catch (e) {
+    } catch (e, stackTrace) {
       _error = 'Error importando contacto: $e';
-      debugPrint('[CustomerManager] $_error');
+      debugPrint('[CustomerManager] ❌ $_error');
+      debugPrint('[CustomerManager] Stack trace: $stackTrace');
       notifyListeners();
-      return null;
+      rethrow; // ✅ FIX: Re-lanzar para que el UI pueda mostrar el error
     }
   }
 

@@ -264,37 +264,78 @@ class _CustomerSelectionDialogState extends State<CustomerSelectionDialog>
 
   /// Importar contacto del dispositivo como cliente
   Future<void> _onImportContact(Customer contact) async {
+    debugPrint('[CustomerSelection] 📞 onImportContact llamado para: ${contact.name}');
+
     // ✅ Email es OPCIONAL - Si no tiene email, se puede importar igual
     // Solo validar si el email existe y es válido (si está presente)
     if (contact.email.isNotEmpty && !contact.email.contains('@')) {
+      debugPrint('[CustomerSelection] Email inválido, mostrando diálogo');
       // Email presente pero inválido - preguntar si quiere corregirlo
       await _showAddEmailDialog(contact);
       return;
     }
 
+    // ✅ FIX: Mostrar indicador de carga mientras se importa
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(
+        child: Card(
+          child: Padding(
+            padding: EdgeInsets.all(20.0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text('Importando contacto...'),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
     try {
+      debugPrint('[CustomerSelection] Convirtiendo contacto a CustomerModel...');
       final contactModel = _convertToCustomerModel(contact);
+      debugPrint('[CustomerSelection] Llamando a importFromDeviceContact...');
       final imported = await _customerService.importFromDeviceContact(contactModel);
+      debugPrint('[CustomerSelection] Importación completada: ${imported?.fullName}');
+
+      // Cerrar diálogo de carga
+      if (mounted) Navigator.pop(context);
 
       if (imported != null && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('${imported.fullName} importado correctamente'),
             backgroundColor: Colors.green,
+            duration: const Duration(seconds: 2),
           ),
         );
 
         // Cerrar diálogo y retornar contacto importado
         final customer = _convertToCustomer(imported);
+        debugPrint('[CustomerSelection] Cerrando diálogo con cliente: ${customer.name}');
         Navigator.pop(context, customer);
+      } else {
+        debugPrint('[CustomerSelection] ⚠️ imported es null, no se cierra el diálogo');
       }
-    } catch (e) {
-      debugPrint('[CustomerSelection] Error importando contacto: $e');
+    } catch (e, stackTrace) {
+      debugPrint('[CustomerSelection] ❌ Error importando contacto: $e');
+      debugPrint('[CustomerSelection] Stack trace: $stackTrace');
+
+      // Cerrar diálogo de carga
+      if (mounted) Navigator.pop(context);
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error al importar: $e'),
+            content: Text('Error al importar: ${e.toString()}'),
             backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4),
           ),
         );
       }

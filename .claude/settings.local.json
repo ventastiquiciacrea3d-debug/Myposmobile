@@ -30,7 +30,8 @@
       "Bash(git rm:*)",
       "Bash(flutter devices)",
       "Bash(flutter build:*)",
-      "Bash(flutter install:*)"
+      "Bash(flutter install:*)",
+      "Bash(tee:*)"
     ],
     "deny": [],
     "ask": []

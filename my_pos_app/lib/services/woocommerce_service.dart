@@ -1607,6 +1607,16 @@ class WooCommerceService {
           'orderby': 'registered_date', // ✅ FIX: Cambiar 'date' a 'registered_date' (válido en WC API)
           'order': 'desc',
         },
+        options: Options(
+          receiveTimeout: const Duration(seconds: 10), // ✅ FIX: Timeout de 10 segundos
+          sendTimeout: const Duration(seconds: 10),
+        ),
+      ).timeout(
+        const Duration(seconds: 12), // ✅ FIX: Timeout total de 12 segundos
+        onTimeout: () {
+          debugPrint('[WooCommerce] getRecentCustomers() timeout después de 12 segundos');
+          throw TimeoutException('La solicitud de clientes tardó demasiado');
+        },
       );
 
       if (response.data is List) {
@@ -1638,6 +1648,16 @@ class WooCommerceService {
         queryParameters: {
           'search': query.trim(),
           'per_page': 20,
+        },
+        options: Options(
+          receiveTimeout: const Duration(seconds: 10), // ✅ FIX: Timeout de 10 segundos
+          sendTimeout: const Duration(seconds: 10),
+        ),
+      ).timeout(
+        const Duration(seconds: 12), // ✅ FIX: Timeout total de 12 segundos
+        onTimeout: () {
+          debugPrint('[WooCommerce] searchCustomers() timeout después de 12 segundos');
+          throw TimeoutException('La búsqueda de clientes tardó demasiado');
         },
       );
 

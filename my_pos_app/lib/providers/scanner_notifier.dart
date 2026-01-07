@@ -391,9 +391,17 @@ class Scanner extends _$Scanner {
   }
 
   Future<void> triggerManualCapture() async {
+    debugPrint("[Scanner] 📸 triggerManualCapture() llamado");
+    debugPrint("[Scanner] latestBarcodeCapture: ${state.latestBarcodeCapture}");
+    debugPrint("[Scanner] isManualCaptureMode: ${state.isManualCaptureMode}");
+
     if (state.latestBarcodeCapture != null) {
+      debugPrint("[Scanner] ✅ Procesando captura manual...");
       await _processBarcodeCapture(state.latestBarcodeCapture!);
       state = state.copyWith(latestBarcodeCapture: null);
+      debugPrint("[Scanner] ✅ Captura manual procesada");
+    } else {
+      debugPrint("[Scanner] ⚠️ No hay código de barras capturado para procesar");
     }
   }
 
