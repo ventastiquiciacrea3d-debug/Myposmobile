@@ -906,7 +906,9 @@ class _ScannerView extends ConsumerWidget {
                 ),
                 onPressed: () async {
                   // ✅ FIX: Establecer pausa manual ANTES de resetear
-                  setState(() => _isCameraPausedManually = true);
+                  if (onTogglePause != null) {
+                    onTogglePause!();
+                  }
                   await scannerNotifier.resetScanner();
                   debugPrint("[ScannerScreen] 🔴 Cámara cerrada manualmente");
                 },
